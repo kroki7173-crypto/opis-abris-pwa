@@ -121,6 +121,8 @@ let openingPlacementActive = false;
 // A new opening is centred on its wall until the technician types or dictates a distance.
 let openingOffsetTouched = false;
 let planView = { zoom: 1, x: 0, y: 0 };
+// "Объекты" is highlighted only when the technician asked for the list; the start screen reached otherwise is "Замер".
+let objectsNavRequested = false;
 let celebratedRevision = null;
 
 function showError(error) {
@@ -357,8 +359,12 @@ function initializeUi() {
   elements.redoButton.addEventListener("click", () => moveHistory(1).catch(showError));
   elements.measureNavButton.addEventListener("click", () => {
     showScreen(packageData?.rooms?.length ? "done" : packageData ? "room" : "start");
+    if (!packageData && !elements.address.value.trim()) elements.address.focus();
   });
-  elements.objectsNavButton.addEventListener("click", () => showScreen("start"));
+  elements.objectsNavButton.addEventListener("click", () => {
+    objectsNavRequested = true;
+    showScreen("start");
+  });
   elements.wallThicknessButton.addEventListener("click", () => {
     selectVoiceTargetById("wallThickness");
     startContextVoice();
@@ -469,14 +475,20 @@ function showScreen(name) {
     elements[screen + "Screen"].hidden = screen !== name;
   }
   clearError();
-  if (name === "start") renderSurveyCatalog().catch(showError);
-  if (name === "room") renderRoomInput();
-  if (name === "openings") renderOpenings();
-  if (name === "interior") renderInteriors();
-  if (name === "adjacent") renderAdjacent();
-  if (name === "shape") renderShape();
-  if (name === "done") renderSummary();
-  const objectMode = name === "start";
+  // A failing renderer must not leave the navigation half-switched; the error is shown on screen.
+  try {
+    if (name === "start") renderSurveyCatalog().catch(showError);
+    if (name === "room") renderRoomInput();
+    if (name === "openings") renderOpenings();
+    if (name === "interior") renderInteriors();
+    if (name === "adjacent") renderAdjacent();
+    if (name === "shape") renderShape();
+    if (name === "done") renderSummary();
+  } catch (error) {
+    showError(error);
+  }
+  const objectMode = name === "start" && objectsNavRequested;
+  objectsNavRequested = false;
   elements.measureNavButton.classList.toggle("active", !objectMode);
   elements.objectsNavButton.classList.toggle("active", objectMode);
   refreshVoiceTarget();
