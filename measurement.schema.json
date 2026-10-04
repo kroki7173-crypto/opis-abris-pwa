@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opis-uchetka.local/schema/measurement-v1.json",
+  "title": "Opis-Uchetka field measurement",
+  "type": "object",
+  "required": ["format", "version", "package_id", "units", "address", "rooms", "connections"],
+  "properties": {
+    "format": { "const": "opis-abris-measurement" },
+    "version": { "const": 1 },
+    "package_id": { "$ref": "#/$defs/id" },
+    "created_at": { "type": "string", "maxLength": 64 },
+    "updated_at": { "type": "string", "maxLength": 64 },
+    "units": { "const": "m" },
+    "address": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "rooms": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/room" } },
+    "connections": { "type": "array", "maxItems": 2500, "items": { "$ref": "#/$defs/connection" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$" },
+    "point": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false },
+    "wall": {
+      "type": "object",
+      "required": ["id", "length_m", "angle_deg", "source"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "length_m": { "type": "number", "exclusiveMinimum": 0, "maximum": 10000 },
+        "angle_deg": { "type": "number", "minimum": -360, "maximum": 360 },
+        "source": { "enum": ["measured", "inferred_opposite", "confirmed_inferred", "inherited_shared"] }
+      }
+    },
+    "opening": {
+      "type": "object",
+      "required": ["id", "kind", "wall_id", "offset_m", "width_m"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["door", "window", "passage"] },
+        "wall_id": { "$ref": "#/$defs/id" },
+        "offset_m": { "type": "number", "minimum": 0, "maximum": 10000 },
+        "width_m": { "type": "number", "minimum": 0.05, "maximum": 10000 },
+        "reverse": { "type": "boolean" }
+      }
+    },
+    "room": {
+      "type": "object",
+      "required": ["id", "name", "origin_m", "wall_thickness_m", "right_angles", "walls", "openings"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "origin_m": { "$ref": "#/$defs/point" },
+        "wall_thickness_m": { "type": "number", "minimum": 0.01, "maximum": 2 },
+        "right_angles": { "type": "boolean" },
+        "walls": { "type": "array", "minItems": 3, "maxItems": 500, "items": { "$ref": "#/$defs/wall" } },
+        "openings": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/opening" } },
+        "interiors": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/interior" } }
+      }
+    },
+    "interior": {
+      "type": "object",
+      "required": ["id", "kind", "wall_id", "offset_m", "inset_m", "width_m", "depth_m"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["storage", "column", "void"] },
+        "wall_id": { "$ref": "#/$defs/id" },
+        "offset_m": { "type": "number", "minimum": 0, "maximum": 10000 },
+        "inset_m": { "type": "number", "minimum": 0, "maximum": 10000 },
+        "width_m": { "type": "number", "minimum": 0.01, "maximum": 10000 },
+        "depth_m": { "type": "number", "minimum": 0.01, "maximum": 10000 },
+        "partition_m": { "type": "number", "minimum": 0.01, "maximum": 2 },
+        "door_width_m": { "type": "number", "minimum": 0.05, "maximum": 10000 },
+        "door_wall": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "name": { "type": "string", "maxLength": 120 }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": ["id", "room_a_id", "wall_a_id", "room_b_id", "wall_b_id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "mode": { "enum": ["full_wall", "door_anchor"] },
+        "room_a_id": { "$ref": "#/$defs/id" },
+        "wall_a_id": { "$ref": "#/$defs/id" },
+        "opening_a_id": { "$ref": "#/$defs/id" },
+        "room_b_id": { "$ref": "#/$defs/id" },
+        "wall_b_id": { "$ref": "#/$defs/id" },
+        "opening_b_id": { "$ref": "#/$defs/id" },
+        "anchor_corner": { "enum": ["start", "end"] },
+        "anchor_offset_m": { "type": "number", "minimum": 0, "maximum": 10000 }
+      }
+    }
+  }
+}

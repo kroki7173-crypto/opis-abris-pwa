@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta id="themeColor" name="theme-color" content="#edf2ee">
+  <meta name="description" content="Четыре варианта мобильного интерфейса полевого абриса">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./designs.css">
+  <title>Варианты интерфейса — Полевой абрис</title>
+</head>
+<body>
+  <main class="concept-shell">
+    <header class="concept-header">
+      <div>
+        <a class="back-link" href="./">← Рабочий абрис</a>
+        <p class="overline">Опись-Учётка · сравнение дизайна</p>
+        <h1>Четыре варианта интерфейса</h1>
+        <p class="intro">Одинаковый сценарий замера показан в четырёх стилях. Переключите тему и выберите вариант, который удобнее технику.</p>
+      </div>
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="Включить тёмную тему">
+        <span class="theme-icon sun" aria-hidden="true">☀</span>
+        <span class="theme-track" aria-hidden="true"><i></i></span>
+        <span class="theme-icon moon" aria-hidden="true">☾</span>
+      </button>
+    </header>
+
+    <p id="choiceStatus" class="choice-status" role="status">Вариант пока не выбран</p>
+    <section id="designGallery" class="design-gallery" aria-label="Варианты интерфейса"></section>
+  </main>
+
+  <template id="sampleTemplate">
+    <article class="sample-card">
+      <header class="sample-heading">
+        <div>
+          <span class="sample-number"></span>
+          <h2 class="sample-title"></h2>
+          <p class="sample-description"></p>
+        </div>
+        <button class="choose-button" type="button">Выбрать</button>
+      </header>
+
+      <div class="phone-frame">
+        <div class="phone-speaker" aria-hidden="true"></div>
+        <div class="app-bar">
+          <div>
+            <span class="app-mark">ОУ</span>
+            <strong>Полевой абрис</strong>
+          </div>
+          <button class="phone-theme-toggle" type="button" aria-label="Включить тёмную тему">
+            <span class="phone-sun" aria-hidden="true">☀</span>
+            <span class="phone-moon" aria-hidden="true">☾</span>
+          </button>
+        </div>
+
+        <div class="progress-row" aria-label="Шаг 2 из 4">
+          <span class="progress-copy">Комната · 2 из 4</span>
+          <span class="progress-dots" aria-hidden="true"><i></i><i class="active"></i><i></i><i></i></span>
+        </div>
+
+        <section class="work-panel">
+          <div class="room-heading">
+            <div>
+              <span class="room-kicker">Текущая комната</span>
+              <h3>Прихожая</h3>
+            </div>
+            <span class="saved-badge">✓ сохранено</span>
+          </div>
+
+          <div class="field-shell">
+            <label>Первая стена</label>
+            <div class="measure-control">
+              <strong>3,20</strong><span>м</span>
+              <button type="button" aria-label="Продиктовать первую стену">🎤</button>
+            </div>
+          </div>
+
+          <div class="field-shell">
+            <label>Соседняя стена</label>
+            <div class="measure-control">
+              <strong>2,70</strong><span>м</span>
+              <button type="button" aria-label="Продиктовать соседнюю стену">🎤</button>
+            </div>
+          </div>
+
+          <div class="plan-card">
+            <div class="plan-caption">
+              <span>План строится сразу</span>
+              <b>8,64 м²</b>
+            </div>
+            <svg class="mini-plan" viewBox="0 0 280 178" role="img" aria-label="Прямоугольная прихожая с дверью">
+              <path class="wall-line" d="M42 25H238V153H42V25"/>
+              <path class="inferred-line" d="M42 153H238M238 25V153"/>
+              <path class="door-gap" d="M96 153h48"/>
+              <path class="door-leaf" d="M96 153v-46"/>
+              <path class="door-arc" d="M96 107a46 46 0 0 1 46 46"/>
+              <text x="140" y="18">3,20</text>
+              <text x="252" y="94">2,70</text>
+              <text class="room-label" x="140" y="88">1</text>
+            </svg>
+            <div class="legend"><span><i></i>измерено</span><span><i class="dash"></i>подставлено</span></div>
+          </div>
+
+          <div class="opening-row">
+            <span class="opening-icon" aria-hidden="true">↳</span>
+            <div><b>Дверь 0,80 м</b><small>от угла A · 0,45 м</small></div>
+            <button type="button" aria-label="Изменить дверь">Изменить</button>
+          </div>
+
+          <button class="next-button" type="button">Дальше: проёмы <span aria-hidden="true">→</span></button>
+        </section>
+
+        <nav class="bottom-nav" aria-label="Разделы">
+          <span class="active"><i>⌂</i>Замер</span>
+          <span><i>▱</i>Объекты</span>
+          <span><i>?</i>Помощь</span>
+        </nav>
+      </div>
+    </article>
+  </template>
+
+  <script type="module" src="./designs.js"></script>
+</body>
+</html>

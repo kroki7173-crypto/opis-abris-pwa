@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta id="themeColor" name="theme-color" content="#f0f0f0">
+  <meta name="description" content="Локальный полевой замер помещений для Опись-Учётки">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Полевой абрис</title>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">ОУ</span>
+        <h1>Полевой абрис</h1>
+      </div>
+      <div class="top-actions">
+        <button id="undoButton" class="icon-button quiet" type="button" aria-label="Отменить последнее действие" title="Отменить" disabled>↶</button>
+        <button id="redoButton" class="icon-button quiet" type="button" aria-label="Вернуть отменённое действие" title="Вернуть" disabled>↷</button>
+        <button id="themeToggle" class="icon-button quiet" type="button" aria-label="Переключить тему" title="Переключить тему">☾</button>
+      </div>
+    </header>
+    <button id="installButton" class="quiet" hidden>Установить приложение</button>
+
+    <p id="saveStatus" class="save-status" role="status">Данные остаются на этом устройстве</p>
+    <p id="errorMessage" class="message error" role="alert" hidden></p>
+    <div id="voiceStatus" class="voice-status" role="status" hidden>
+      <span class="voice-orb" aria-hidden="true">●</span>
+      <span class="voice-copy">
+        <strong id="voiceStatusText">Микрофон работает</strong>
+        <span><span id="voiceTarget">Говорите размер</span><span class="voice-levels" aria-hidden="true"><i></i><i></i><i></i></span></span>
+      </span>
+      <button id="voiceStopButton" class="voice-stop quiet" type="button">Остановить</button>
+    </div>
+
+    <section id="startScreen" class="card screen">
+      <p class="step">Объект</p>
+      <h2>Какой объект измеряем?</h2>
+      <label for="address">Адрес</label>
+      <input id="address" autocomplete="street-address" maxlength="1000"
+             placeholder="Улица, дом, квартира">
+      <p class="hint">Адрес и размеры сохраняются только в браузере этого телефона.</p>
+      <button id="startButton" class="primary" disabled>Начать с прихожей</button>
+
+      <div class="catalog-block">
+        <div class="catalog-heading">
+          <h3>Сохранённые объекты</h3>
+          <span id="surveyCount" class="counter">0</span>
+        </div>
+        <p id="surveyEmpty" class="hint">На этом телефоне пока нет сохранённых замеров.</p>
+        <div id="surveyList" class="survey-list"></div>
+        <button id="shareTodayButton" class="secondary wide" disabled>
+          Поделиться сегодняшними замерами (ZIP)
+        </button>
+      </div>
+    </section>
+
+    <section id="roomScreen" class="card screen plan-screen" hidden>
+      <div class="plan-toolbar">
+        <button id="backButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
+        <button id="wallThicknessButton" class="dimension-chip quiet" type="button">
+          Толщина <strong id="wallThicknessValue">—</strong> м
+        </button>
+      </div>
+
+      <div class="canvas-data-inputs">
+        <label for="roomName">Название комнаты</label>
+        <input id="roomName" value="Прихожая" maxlength="120">
+        <label for="firstLength">Размер горизонтальной стены</label>
+        <input id="firstLength" inputmode="decimal" placeholder="3,00">
+        <label for="secondLength">Размер вертикальной стены</label>
+        <input id="secondLength" inputmode="decimal" placeholder="2,40">
+        <label for="wallThickness">Толщина стены</label>
+        <input id="wallThickness" inputmode="decimal" placeholder="0,10">
+      </div>
+
+      <figure class="preview plan-stage">
+        <canvas id="roomCanvas" width="720" height="560"
+                aria-label="План комнаты. Нажмите на стену для голосового ввода или на число для ручного ввода"></canvas>
+        <figcaption class="plan-tip">Коснитесь стены и назовите размер</figcaption>
+      </figure>
+
+      <div class="object-tools" aria-label="Добавить объект">
+        <button id="roomDoorButton" class="tool-button secondary" type="button"><span aria-hidden="true">▯</span>Дверь</button>
+        <button id="roomWindowButton" class="tool-button secondary" type="button"><span aria-hidden="true">═</span>Окно</button>
+        <button id="saveRoomButton" class="tool-button primary" type="button"><span aria-hidden="true">→</span>Продолжить</button>
+      </div>
+      <button id="shapeButton" class="quiet wide" type="button">Комната не прямоугольная</button>
+    </section>
+    <section id="openingsScreen" class="card screen plan-screen" hidden>
+      <div class="plan-toolbar">
+        <button id="openingsBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
+        <strong>Двери и окна</strong>
+        <span id="openingsRoomName" hidden></span>
+      </div>
+
+      <div class="canvas-data-inputs">
+        <label for="openingWall">Стена</label>
+        <select id="openingWall">
+          <option value="0">Стена 1</option><option value="1">Стена 2</option>
+          <option value="2">Стена 3</option><option value="3">Стена 4</option>
+        </select>
+        <label for="openingOffset">До ближайшего края от угла</label>
+        <input id="openingOffset" inputmode="decimal" value="0">
+        <label for="openingWidth">Ширина</label>
+        <input id="openingWidth" inputmode="decimal" value="0,80">
+      </div>
+
+      <figure class="preview plan-stage opening-stage">
+        <canvas id="openingCanvas" width="720" height="560"
+                aria-label="План комнаты. Нажмите на стену, чтобы поставить дверь или окно"></canvas>
+        <figcaption class="plan-tip">Выберите стену и назовите расстояние до ближайшего угла</figcaption>
+      </figure>
+
+      <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
+        <button type="button" data-kind="door" class="type active"><span aria-hidden="true">▯</span>Дверь 0,80</button>
+        <button type="button" data-kind="window" class="type"><span aria-hidden="true">═</span>Окно 1,30</button>
+        <button type="button" data-kind="passage" class="type"><span aria-hidden="true">□</span>Проём</button>
+      </div>
+
+      <div class="opening-readout">
+        <button id="openingOffsetButton" class="dimension-chip quiet" type="button">До угла <strong id="openingOffsetValue">0</strong> м</button>
+        <button id="openingWidthButton" class="dimension-chip quiet" type="button">Ширина <strong id="openingWidthValue">0,80</strong> м</button>
+      </div>
+      <div id="widthPresets" class="presets" hidden aria-label="Быстрые размеры"></div>
+      <p id="wallLockHint" class="message notice" hidden>Эта стена уже связана с другой комнатой.</p>
+      <div class="opening-edit-actions">
+        <button id="addOpeningButton" class="primary wide" type="button">Поставить на план</button>
+        <button id="openingCancelEditButton" class="quiet wide" type="button" hidden>Отменить правку</button>
+      </div>
+      <button id="openingThicknessPrompt" class="thickness-prompt" type="button" hidden>
+        <span id="openingThicknessText">Укажите толщину стены</span><span aria-hidden="true">🎙</span>
+      </button>
+
+      <div id="openingList" class="opening-list"></div>
+      <button id="interiorsButton" class="secondary wide" type="button">Кладовые, колонны и проёмы</button>
+      <button id="finishButton" class="secondary wide" type="button">Готово — общий план</button>
+    </section>
+    <section id="interiorScreen" class="card screen plan-screen" hidden>
+      <div class="plan-toolbar">
+        <button id="interiorBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
+        <strong>Внутри помещения</strong>
+      </div>
+
+      <figure class="preview plan-stage interior-stage">
+        <canvas id="interiorCanvas" width="720" height="560"
+                aria-label="План комнаты с кладовыми, колоннами и проёмами в перекрытии"></canvas>
+        <figcaption class="plan-tip">Отступы считаются от начала выбранной стены</figcaption>
+      </figure>
+
+      <div class="type-tabs compact-tabs interior-types" role="group" aria-label="Тип внутреннего объекта">
+        <button type="button" data-interior-kind="storage" class="type active">Кладовка</button>
+        <button type="button" data-interior-kind="column" class="type">Колонна</button>
+        <button type="button" data-interior-kind="void" class="type">Проём</button>
+      </div>
+
+      <div class="interior-form">
+        <label for="interiorWall">Базовая стена
+          <select id="interiorWall">
+            <option value="0">Стена 1</option><option value="1">Стена 2</option>
+            <option value="2">Стена 3</option><option value="3">Стена 4</option>
+          </select>
+        </label>
+        <label for="interiorOffset">Вдоль стены, м<input id="interiorOffset" inputmode="decimal" value="0,50"></label>
+        <label for="interiorInset">Внутрь комнаты, м<input id="interiorInset" inputmode="decimal" value="0,50"></label>
+        <label for="interiorWidth">Ширина внутри, м<input id="interiorWidth" inputmode="decimal" value="1,20"></label>
+        <label for="interiorDepth">Глубина внутри, м<input id="interiorDepth" inputmode="decimal" value="1,20"></label>
+        <div id="storageFields" class="storage-fields">
+          <label for="interiorName">Название<input id="interiorName" maxlength="120" value="Кладовка"></label>
+          <label for="interiorPartition">Перегородка, м<input id="interiorPartition" inputmode="decimal" value="0,10"></label>
+          <label for="interiorDoorWidth">Дверь, м<input id="interiorDoorWidth" inputmode="decimal" value="0,80"></label>
+          <label for="interiorDoorWall">Сторона двери
+            <select id="interiorDoorWall">
+              <option value="0">Сторона 1</option><option value="1">Сторона 2</option>
+              <option value="2" selected>Сторона 3</option><option value="3">Сторона 4</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="interior-edit-actions">
+        <button id="addInteriorButton" class="primary wide" type="button">Добавить на план</button>
+        <button id="interiorCancelEditButton" class="quiet wide" type="button" hidden>Отменить правку</button>
+      </div>
+      <div id="interiorList" class="opening-list"></div>
+      <button id="interiorDoneButton" class="secondary wide" type="button">Готово</button>
+    </section>
+    <section id="adjacentScreen" class="card screen plan-screen" hidden>
+      <div class="plan-toolbar">
+        <button id="adjacentBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
+        <strong>Следующая комната</strong>
+      </div>
+      <span id="adjacentFrom" hidden></span>
+
+      <div class="canvas-data-inputs">
+        <label for="adjacentName">Название</label>
+        <input id="adjacentName" maxlength="120" value="Комната">
+        <label for="adjacentFirstLength">Стена с дверью</label>
+        <input id="adjacentFirstLength" inputmode="decimal">
+        <label for="adjacentSecondLength">Следующая стена</label>
+        <input id="adjacentSecondLength" inputmode="decimal">
+        <label for="adjacentAnchorCorner">Ближайший угол</label>
+        <select id="adjacentAnchorCorner"><option value="start">Первый угол</option><option value="end">Второй угол</option></select>
+        <label for="adjacentAnchorOffset">От угла до двери</label>
+        <input id="adjacentAnchorOffset" inputmode="decimal">
+      </div>
+
+      <figure id="adjacentPreview" class="preview plan-stage adjacent-stage">
+        <canvas id="adjacentOverviewCanvas" class="overview-inset" width="360" height="240" aria-label="Общий план с новой комнатой"></canvas>
+        <canvas id="adjacentCanvas" width="720" height="560"
+                aria-label="Новая комната с дверью. Нажмите стену для замера или число для исправления"></canvas>
+        <figcaption class="plan-tip"><span id="adjacentBindingHint" hidden></span>Коснитесь красной стены и назовите размер</figcaption>
+      </figure>
+
+      <p id="adjacentStatus" class="message notice"></p>
+      <button id="adjacentShapeButton" class="quiet wide" type="button">Комната не прямоугольная</button>
+      <p id="adjacentShapeNote" class="hint" hidden></p>
+      <div id="adjacentAnchorPanel" class="anchor-panel" hidden>
+        <p id="adjacentAnchorLead" class="lead"></p>
+        <div class="opening-readout">
+          <button id="adjacentAnchorCornerButton" class="dimension-chip quiet" type="button">Ближайший: <strong id="adjacentAnchorCornerValue">первый угол</strong></button>
+          <button id="adjacentAnchorOffsetButton" class="dimension-chip quiet" type="button">До двери <strong id="adjacentAnchorOffsetValue">—</strong> м</button>
+        </div>
+      </div>
+      <button id="createAdjacentButton" class="primary wide" type="button">Готово — войти в комнату</button>
+    </section>
+    <section id="shapeScreen" class="card screen plan-screen" hidden>
+      <div class="plan-toolbar">
+        <button id="shapeBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
+        <strong>Форма комнаты</strong>
+      </div>
+      <p class="lead shape-lead">Идите по комнате и вводите длины стен по порядку. Для каждого угла выберите:
+        90° обычный, 270° если угол выступает внутрь комнаты, или другой. Две последние стены можно
+        не вводить — программа вычислит их. Если форма на экране зеркальная, нажмите «Отразить».</p>
+
+      <div class="shape-count" role="group" aria-label="Число стен">
+        <span>Стен</span>
+        <button id="shapeFewerButton" class="secondary compact" type="button" aria-label="Меньше стен">−</button>
+        <strong id="shapeCount">4</strong>
+        <button id="shapeMoreButton" class="secondary compact" type="button" aria-label="Больше стен">+</button>
+        <button id="shapeMirrorButton" class="secondary compact" type="button">Отразить</button>
+      </div>
+
+      <figure class="preview plan-stage shape-stage">
+        <canvas id="shapeCanvas" width="720" height="560"
+                aria-label="Форма комнаты по размерам. Нажмите на стену, чтобы ввести размер"></canvas>
+        <figcaption id="shapeCaption" class="plan-tip">Коснитесь стены и назовите размер</figcaption>
+      </figure>
+
+      <div id="shapeFields" class="shape-fields"></div>
+      <p id="shapeStatus" class="message notice" aria-live="polite"></p>
+      <button id="shapeDoneButton" class="primary wide" type="button" disabled>Форма совпадает с комнатой — продолжить</button>
+      <button id="shapeResetButton" class="quiet wide" type="button" hidden>Сделать комнату прямоугольной</button>
+    </section>
+    <section id="doneScreen" class="card screen plan-screen" hidden>
+      <span id="summaryAddress" hidden></span>
+      <figure class="preview plan-stage final-plan-stage">
+        <canvas id="planCanvas" width="720" height="620"
+                aria-label="Общий план. Разведите два пальца для увеличения"></canvas>
+        <figcaption class="plan-tip">Разведите два пальца, чтобы увеличить план</figcaption>
+      </figure>
+
+      <section id="validationPanel" class="validation-panel" aria-live="polite">
+        <strong id="validationTitle"></strong>
+        <ul id="validationList"></ul>
+      </section>
+      <div id="roomSummary" hidden></div>
+
+      <button id="shareButton" class="primary wide">Передать в настольное приложение</button>
+      <div class="final-actions">
+        <button id="editOpeningsButton" class="quiet" type="button">Исправить план</button>
+        <button id="objectListButton" class="quiet" type="button">Объекты</button>
+      </div>
+      <button id="editButton" hidden type="button">Изменить размеры первой комнаты</button>
+      <button id="newButton" class="secondary wide">Новый замер</button>
+    </section>
+    <button id="contextMicButton" class="context-mic" type="button" aria-label="Включить микрофон" title="Включить микрофон">🎙</button>
+
+    <dialog id="settingsDialog">
+      <div class="dialog-body">
+        <div class="dialog-head"><h2>Настройки</h2><button id="settingsClose" class="dialog-close quiet" type="button" aria-label="Закрыть">×</button></div>
+        <div class="setting-row"><span>Тёмная тема</span><input id="darkThemeSetting" type="checkbox" aria-label="Тёмная тема"></div>
+        <div class="setting-row"><span>Показывать кнопку темы вверху</span><input id="showThemeControl" type="checkbox" checked></div>
+      </div>
+    </dialog>
+
+    <dialog id="helpDialog">
+      <div class="dialog-body">
+        <div class="dialog-head"><h2>Помощь</h2><button id="helpClose" class="dialog-close quiet" type="button" aria-label="Закрыть">×</button></div>
+        <p class="lead">Нажмите на нужное поле или стену, затем включите микрофон. Нажатие на число оставляет ручной ввод доступным.</p>
+        <p class="hint">Все действия автоматически сохраняются на этом устройстве.</p>
+      </div>
+    </dialog>
+
+    <nav class="bottom-nav" aria-label="Основная навигация">
+      <button id="measureNavButton" class="nav-button active" type="button"><span aria-hidden="true">⌂</span><span>Замер</span></button>
+      <button id="objectsNavButton" class="nav-button" type="button"><span aria-hidden="true">▱</span><span>Объекты</span></button>
+      <button id="settingsNavButton" class="nav-button" type="button"><span aria-hidden="true">⚙</span><span>Настройки</span></button>
+      <button id="helpNavButton" class="nav-button" type="button"><span aria-hidden="true">?</span><span>Помощь</span></button>
+    </nav>
+  </main>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
