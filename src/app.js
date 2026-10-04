@@ -462,7 +462,7 @@ function showScreen(name) {
   if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
   if (name !== "adjacent") cancelAnimationFrame(adjacentPulseFrame);
-  const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar");
+  const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar, .address-field");
   (microphoneHost ?? document.querySelector(".shell")).append(elements.contextMicButton);
   elements.contextMicButton.classList.toggle("docked", Boolean(microphoneHost));
   for (const screen of ["start", "room", "openings", "interior", "adjacent", "shape", "done"]) {
