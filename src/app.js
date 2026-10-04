@@ -49,7 +49,7 @@ const ids = [
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
   "backButton", "saveRoomButton", "openingCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
-  "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingCornerButton", "openingCornerOther", "openingWidthButton", "openingWidthValue",
+  "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText",
   "interiorsButton", "interiorBackButton", "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
@@ -118,8 +118,8 @@ let roomPulseFrame = null;
 let openingPulseFrame = null;
 let adjacentPulseFrame = null;
 let openingPlacementActive = false;
-// The openings distance is measured from the corner the technician picks (button); storage stays from the wall start.
-let openingCorner = "start";
+// A new opening is centred on its wall until the technician types or dictates a distance.
+let openingOffsetTouched = false;
 let planZoom = 1;
 let planPinch = null;
 let celebratedRevision = null;
@@ -451,7 +451,6 @@ function draftValue() {
       openingKind,
       openingWall: elements.openingWall.value,
       openingOffset: elements.openingOffset.value,
-      openingCorner,
       openingWidth: elements.openingWidth.value,
       interiorKind,
       interiorWall: elements.interiorWall.value,
@@ -500,7 +499,6 @@ function restoreForm(draft) {
   elements.openingWall.dataset.wanted = form.openingWall || "0";
   elements.openingWall.value = form.openingWall || "0";
   elements.openingOffset.value = form.openingOffset ?? "0";
-  openingCorner = form.openingCorner === "end" ? "end" : "start";
   elements.openingWidth.value = form.openingWidth || "0,80";
   elements.interiorWall.dataset.wanted = form.interiorWall || "0";
   elements.interiorWall.value = form.interiorWall || "0";
@@ -965,6 +963,7 @@ function setKind(kind, resetWidth = true, persistChange = true) {
     const fallback = kind === "door" ? 0.8 : kind === "window" ? 1.3 : 0.9;
     elements.openingWidth.value = fallback.toFixed(2).replace(".", ",");
   }
+  if (openingPlacementActive) centerOpeningOffset();
   renderPresets();
   if (currentScreen === "openings") renderOpenings();
   if (persistChange) schedulePersist();
@@ -986,22 +985,21 @@ function renderPresets() {
   }
 }
 
-function openingOffsetFromStart(room, wallIndex) {
-  const raw = elements.openingOffset.value;
-  if (openingCorner !== "end") return raw;
-  const offset = decimal(raw);
+function centerOpeningOffset() {
+  if (openingOffsetTouched || editingOpeningId) return;
+  const room = packageData?.rooms?.[currentRoomIndex];
+  const wall = room?.walls?.[Number(elements.openingWall.value)];
   const width = decimal(elements.openingWidth.value);
-  if (!Number.isFinite(offset) || !Number.isFinite(width)) return raw;
-  return String(Math.round((room.walls[wallIndex].length_m - offset - width) * 1000) / 1000);
+  if (!wall || !Number.isFinite(width)) return;
+  const centered = Math.max(0, Math.round((wall.length_m - width) / 2 * 100) / 100);
+  elements.openingOffset.value = centered.toFixed(2).replace(".", ",");
 }
 
 function openingFormValues() {
-  const room = packageData?.rooms?.[currentRoomIndex];
-  const wallIndex = Number(elements.openingWall.value);
   return {
     kind: openingKind,
-    wallIndex,
-    offsetM: room ? openingOffsetFromStart(room, wallIndex) : elements.openingOffset.value,
+    wallIndex: Number(elements.openingWall.value),
+    offsetM: elements.openingOffset.value,
     widthM: elements.openingWidth.value,
   };
 }
@@ -1009,7 +1007,7 @@ function openingFormValues() {
 function clearOpeningEdit(resetFields = true) {
   editingOpeningId = null;
   openingPlacementActive = false;
-  openingCorner = "start";
+  openingOffsetTouched = false;
   elements.addOpeningButton.textContent = "Поставить на план";
   elements.openingCancelEditButton.hidden = true;
   if (!resetFields) return;
@@ -1023,7 +1021,7 @@ function beginOpeningEdit(opening) {
   if (!room) return;
   editingOpeningId = opening.id;
   openingPlacementActive = true;
-  openingCorner = "start";
+  openingOffsetTouched = true;
   elements.openingWall.value = String(room.walls.findIndex((wall) => wall.id === opening.wall_id));
   elements.openingOffset.value = String(opening.offset_m).replace(".", ",");
   elements.openingWidth.value = String(opening.width_m).replace(".", ",");
@@ -1203,10 +1201,7 @@ function renderOpenings() {
   const wallIndex = Math.min(Math.max(Number(elements.openingWall.value) || 0, 0), room.walls.length - 1);
   elements.openingWall.value = String(wallIndex);
   elements.openingOffsetValue.textContent = elements.openingOffset.value || "—";
-  const startName = cornerName(wallIndex);
-  const endName = cornerName((wallIndex + 1) % room.walls.length);
-  elements.openingCornerName.textContent = openingCorner === "end" ? endName : startName;
-  elements.openingCornerOther.textContent = openingCorner === "end" ? startName : endName;
+  elements.openingCornerName.textContent = cornerName(wallIndex);
   elements.openingWidthValue.textContent = elements.openingWidth.value || "—";
   const selectedConnections = connectionsForWall(packageData, currentRoomIndex, room.walls[wallIndex].id);
   const selectedFullConnection = selectedConnections.some(
@@ -1223,7 +1218,7 @@ function renderOpenings() {
   const draw = () => {
     drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive && !selectedFullConnection);
     if (openingPlacementActive && !selectedFullConnection) {
-      const offset = decimal(openingOffsetFromStart(room, wallIndex));
+      const offset = decimal(elements.openingOffset.value);
       const width = decimal(elements.openingWidth.value);
       if (Number.isFinite(offset) && offset >= 0 && width > 0 && offset + width <= room.walls[wallIndex].length_m) {
         drawOpeningSymbol(
@@ -2110,7 +2105,8 @@ for (const input of [elements.roomName, elements.firstLength, elements.secondLen
 }
 for (const input of [elements.openingWall, elements.openingOffset, elements.openingWidth]) {
   input.addEventListener("input", () => {
-    if (input === elements.openingWall) openingCorner = "start";
+    if (input === elements.openingOffset) openingOffsetTouched = true;
+    else centerOpeningOffset();
     openingPlacementActive = true;
     renderOpenings();
     schedulePersist();
@@ -2219,22 +2215,6 @@ elements.addOpeningButton.addEventListener("click", async () => {
     showError(error);
   }
 });
-elements.openingCornerButton.addEventListener("click", () => {
-  const room = packageData?.rooms?.[currentRoomIndex];
-  if (!room) return;
-  const wallIndex = Number(elements.openingWall.value);
-  // Keep the door where it is: re-express the typed distance from the other corner.
-  const offset = decimal(elements.openingOffset.value);
-  const width = decimal(elements.openingWidth.value);
-  if (Number.isFinite(offset) && Number.isFinite(width)) {
-    const flipped = Math.round((room.walls[wallIndex].length_m - offset - width) * 1000) / 1000;
-    if (flipped >= 0) elements.openingOffset.value = String(flipped).replace(".", ",");
-  }
-  openingCorner = openingCorner === "end" ? "start" : "end";
-  openingPlacementActive = true;
-  renderOpenings();
-  schedulePersist();
-});
 elements.openingCancelEditButton.addEventListener("click", () => {
   clearOpeningEdit();
   renderOpenings();
@@ -2309,7 +2289,7 @@ elements.createAdjacentButton.addEventListener("click", async () => {
     pendingShape = null;
     editingOpeningId = null;
     openingPlacementActive = false;
-    openingCorner = "start";
+    openingOffsetTouched = false;
     elements.openingWall.value = "1";
     elements.openingOffset.value = "0";
     showScreen("openings");
@@ -2476,9 +2456,9 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
   const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
-  const previousWall = elements.openingWall.value;
   elements.openingWall.value = String(wallIndex);
-  if (String(wallIndex) !== previousWall) openingCorner = "start";
+  openingOffsetTouched = false;
+  centerOpeningOffset();
   openingPlacementActive = true;
   renderOpenings();
   selectVoiceTargetById("openingOffset");

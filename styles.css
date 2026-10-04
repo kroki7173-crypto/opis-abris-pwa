@@ -295,7 +295,6 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .compact-tabs .type { display: grid; min-height: 3.25rem; padding: 0.42rem 0.25rem; place-items: center; gap: 0.1rem; font-size: 0.76rem; }
 .compact-tabs .type span { font-size: 1.2rem; line-height: 1; }
 .opening-readout { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.55rem; }
-#openingCornerButton { margin-top: 0.5rem; }
 .opening-readout .dimension-chip { width: 100%; padding-inline: 0.45rem; font-size: 0.8rem; }
 .thickness-prompt { display: flex; width: 100%; margin-top: 0.6rem; align-items: center; justify-content: space-between; color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); animation: anchor-pulse 0.9s ease-in-out infinite alternate; }
 .adjacent-stage canvas { height: clamp(19rem, 43dvh, 27rem); }
