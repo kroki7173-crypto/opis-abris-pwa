@@ -63,7 +63,7 @@ const ids = [
   "adjacentBackButton", "createAdjacentButton", "shareButton", "objectListButton", "editButton",
   "editOpeningsButton", "newButton", "roomCanvas", "planCanvas", "saveStatus",
   "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
-  "contextMicButton", "themeToggle", "themeColor", "undoButton", "redoButton",
+  "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
   "wallThicknessButton", "wallThicknessValue", "roomDoorButton", "roomWindowButton",
   "settingsDialog", "settingsClose", "darkThemeSetting", "showThemeControl",
   "helpDialog", "helpClose", "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
@@ -120,8 +120,7 @@ let adjacentPulseFrame = null;
 let openingPlacementActive = false;
 // A new opening is centred on its wall until the technician types or dictates a distance.
 let openingOffsetTouched = false;
-let planZoom = 1;
-let planPinch = null;
+let planView = { zoom: 1, x: 0, y: 0 };
 let celebratedRevision = null;
 
 function showError(error) {
@@ -285,7 +284,7 @@ function applyTheme(theme, persistChoice = true) {
   elements.darkThemeSetting.checked = value === "dark";
   elements.themeToggle.textContent = value === "dark" ? "☀" : "☾";
   elements.themeToggle.setAttribute("aria-label", value === "dark" ? "Включить светлую тему" : "Включить тёмную тему");
-  elements.themeColor.content = value === "dark" ? "#1f2228" : "#f0f0f0";
+  elements.themeColor.content = value === "dark" ? "#15181d" : "#153e60";
   if (persistChoice) storeValue(THEME_KEY, value);
   if (currentScreen === "room") renderRoomInput();
   if (currentScreen === "openings") renderOpenings();
@@ -341,7 +340,7 @@ async function moveHistory(direction) {
 
 function initializeUi() {
   applyTheme(storedValue(THEME_KEY, "light"), false);
-  setThemeControlVisible(storedValue(THEME_CONTROL_KEY, "1") !== "0", false);
+  setThemeControlVisible(storedValue(THEME_CONTROL_KEY, "0") === "1", false);
   elements.themeToggle.addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
   elements.darkThemeSetting.addEventListener("change", () => applyTheme(elements.darkThemeSetting.checked ? "dark" : "light"));
   elements.showThemeControl.addEventListener("change", () => setThemeControlVisible(elements.showThemeControl.checked));
@@ -393,22 +392,71 @@ function initializeUi() {
     selectVoiceTargetById("adjacentAnchorOffset");
     startContextVoice();
   });
-  const touchDistance = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
-  elements.planCanvas.addEventListener("touchstart", (event) => {
-    if (event.touches.length !== 2) return;
-    event.preventDefault();
-    planPinch = { distance: touchDistance(event.touches), zoom: planZoom };
-  }, { passive: false });
-  elements.planCanvas.addEventListener("touchmove", (event) => {
-    if (event.touches.length !== 2 || !planPinch) return;
-    event.preventDefault();
-    planZoom = Math.min(4, Math.max(0.8, planPinch.zoom * touchDistance(event.touches) / planPinch.distance));
-    renderSummary();
-  }, { passive: false });
-  elements.planCanvas.addEventListener("touchend", () => { planPinch = null; });
+  installPlanGestures();
 }
+function syncHeaderTitle() {
+  const address = (currentScreen === "start" || !packageData ? elements.address.value : packageData.address).trim();
+  elements.headerTitle.textContent = address || "Новый замер";
+}
+// One finger pans the whole plan, two fingers zoom about their midpoint; a double tap resets the view.
+function installPlanGestures() {
+  const canvas = elements.planCanvas;
+  const pointers = new Map();
+  let last = null;
+  let lastTap = 0;
+  const toCanvas = (clientX, clientY) => {
+    const bounds = canvas.getBoundingClientRect();
+    return [(clientX - bounds.left) * canvas.width / bounds.width, (clientY - bounds.top) * canvas.height / bounds.height];
+  };
+  const snapshot = () => {
+    const points = [...pointers.values()];
+    const mid = [points.reduce((sum, p) => sum + p[0], 0) / points.length, points.reduce((sum, p) => sum + p[1], 0) / points.length];
+    const spread = points.length > 1 ? Math.hypot(points[0][0] - points[1][0], points[0][1] - points[1][1]) : 0;
+    return { mid, spread };
+  };
+  const redraw = () => drawPlan(canvas, packageData, planView);
+  canvas.addEventListener("pointerdown", (event) => {
+    try { canvas.setPointerCapture(event.pointerId); } catch { /* Capture only keeps the drag alive outside the canvas. */ }
+    pointers.set(event.pointerId, toCanvas(event.clientX, event.clientY));
+    last = snapshot();
+    if (pointers.size === 1) {
+      const now = Date.now();
+      if (now - lastTap < 320) {
+        planView = { zoom: 1, x: 0, y: 0 };
+        redraw();
+      }
+      lastTap = now;
+    }
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.set(event.pointerId, toCanvas(event.clientX, event.clientY));
+    const current = snapshot();
+    const centre = [canvas.width / 2, canvas.height / 2];
+    const factor = last.spread > 0 && current.spread > 0 ? current.spread / last.spread : 1;
+    const zoom = Math.min(8, Math.max(0.5, planView.zoom * factor));
+    const applied = zoom / planView.zoom;
+    // Keep the plan point under the fingers' midpoint fixed while zooming, then follow the midpoint.
+    planView = {
+      zoom,
+      x: (last.mid[0] - centre[0]) - (last.mid[0] - centre[0] - planView.x) * applied + (current.mid[0] - last.mid[0]),
+      y: (last.mid[1] - centre[1]) - (last.mid[1] - centre[1] - planView.y) * applied + (current.mid[1] - last.mid[1]),
+    };
+    last = current;
+    redraw();
+  });
+  const release = (event) => {
+    pointers.delete(event.pointerId);
+    last = pointers.size ? snapshot() : null;
+  };
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+}
+
 function showScreen(name) {
   currentScreen = name;
+  syncHeaderTitle();
+  if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
   if (name !== "adjacent") cancelAnimationFrame(adjacentPulseFrame);
   const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar");
@@ -884,7 +932,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   }
 
 }
-function drawPlan(canvas, pkg, viewScale = 1) {
+function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
   const surface = uiColor("--surface", "#f7f8fa");
@@ -902,12 +950,13 @@ function drawPlan(canvas, pkg, viewScale = 1) {
   const margin = 54;
   const spanX = Math.max(maxX - minX, 0.1);
   const spanY = Math.max(maxY - minY, 0.1);
-  const scale = Math.min((canvas.width - 2 * margin) / spanX, (canvas.height - 2 * margin) / spanY) * viewScale;
+  const scale = Math.min((canvas.width - 2 * margin) / spanX, (canvas.height - 2 * margin) / spanY);
   const offsetX = (canvas.width - spanX * scale) / 2;
   const offsetY = (canvas.height - spanY * scale) / 2;
+  // Zoom is about the canvas centre; pan is added afterwards, both in canvas pixels.
   const transform = (point) => [
-    offsetX + (point[0] - minX) * scale,
-    canvas.height - offsetY - (point[1] - minY) * scale,
+    canvas.width / 2 + (offsetX + (point[0] - minX) * scale - canvas.width / 2) * view.zoom + view.x,
+    canvas.height / 2 + (canvas.height - offsetY - (point[1] - minY) * scale - canvas.height / 2) * view.zoom + view.y,
   ];
 
   roomPointSets.forEach((roomPointsValue, roomIndex) => {
@@ -1892,7 +1941,7 @@ function renderAdjacent() {
 function renderSummary() {
   if (!packageData?.rooms?.length) return;
   elements.summaryAddress.textContent = packageData.address;
-  drawPlan(elements.planCanvas, packageData, planZoom);
+  drawPlan(elements.planCanvas, packageData, planView);
   const issues = validationIssues(packageData);
   elements.validationPanel.classList.toggle("ready", issues.length === 0);
   elements.validationPanel.classList.toggle("needs-work", issues.length > 0);
@@ -2079,6 +2128,7 @@ async function leaveCurrentForCatalog(message) {
 }
 
 elements.address.addEventListener("input", () => {
+  syncHeaderTitle();
   elements.startButton.disabled = !elements.address.value.trim();
   schedulePersist();
 });

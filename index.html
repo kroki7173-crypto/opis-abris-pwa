@@ -3,7 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta id="themeColor" name="theme-color" content="#f0f0f0">
+  <meta id="themeColor" name="theme-color" content="#153e60">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Абрис">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
   <meta name="description" content="Локальный полевой замер помещений для Опись-Учётки">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
@@ -14,12 +19,11 @@
   <main class="shell">
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">ОУ</span>
-        <h1>Полевой абрис</h1>
+        <h1 id="headerTitle">Новый замер</h1>
       </div>
       <div class="top-actions">
-        <button id="undoButton" class="icon-button quiet" type="button" aria-label="Отменить последнее действие" title="Отменить" disabled>↶</button>
-        <button id="redoButton" class="icon-button quiet" type="button" aria-label="Вернуть отменённое действие" title="Вернуть" disabled>↷</button>
+        <button id="undoButton" class="icon-button quiet" type="button" aria-label="Отменить последнее действие" title="Отменить" disabled><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+        <button id="redoButton" class="icon-button quiet" type="button" aria-label="Вернуть отменённое действие" title="Вернуть" disabled><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
         <button id="themeToggle" class="icon-button quiet" type="button" aria-label="Переключить тему" title="Переключить тему">☾</button>
       </div>
     </header>
@@ -282,7 +286,7 @@
       <div class="dialog-body">
         <div class="dialog-head"><h2>Настройки</h2><button id="settingsClose" class="dialog-close quiet" type="button" aria-label="Закрыть">×</button></div>
         <div class="setting-row"><span>Тёмная тема</span><input id="darkThemeSetting" type="checkbox" aria-label="Тёмная тема"></div>
-        <div class="setting-row"><span>Показывать кнопку темы вверху</span><input id="showThemeControl" type="checkbox" checked></div>
+        <div class="setting-row"><span>Показывать кнопку темы вверху</span><input id="showThemeControl" type="checkbox"></div>
       </div>
     </dialog>
 
@@ -295,10 +299,10 @@
     </dialog>
 
     <nav class="bottom-nav" aria-label="Основная навигация">
-      <button id="measureNavButton" class="nav-button active" type="button"><span aria-hidden="true">⌂</span><span>Замер</span></button>
-      <button id="objectsNavButton" class="nav-button" type="button"><span aria-hidden="true">▱</span><span>Объекты</span></button>
-      <button id="settingsNavButton" class="nav-button" type="button"><span aria-hidden="true">⚙</span><span>Настройки</span></button>
-      <button id="helpNavButton" class="nav-button" type="button"><span aria-hidden="true">?</span><span>Помощь</span></button>
+      <button id="measureNavButton" class="nav-button active" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18"/><path d="M5 20V8l7-4 7 4v12"/><path d="M10 20v-6h4v6"/></svg><span>Замер</span></button>
+      <button id="objectsNavButton" class="nav-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/></svg><span>Объекты</span></button>
+      <button id="settingsNavButton" class="nav-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg><span>Настройки</span></button>
+      <button id="helpNavButton" class="nav-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7"/><path d="M12 17h.01"/></svg><span>Помощь</span></button>
     </nav>
   </main>
 

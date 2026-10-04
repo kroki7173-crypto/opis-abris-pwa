@@ -2,6 +2,8 @@
   color-scheme: light;
   font-family: "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --bg: #f0f0f0;
+  --header: #153e60;
+  --header-text: #ffffff;
   --surface: #f0f0f0;
   --field: #ffffff;
   --text: #1a1a1a;
@@ -31,6 +33,8 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #1f2228;
+  --header: #15181d;
+  --header-text: #e8ecf3;
   --surface: #272b33;
   --field: #2c313a;
   --text: #dfe3ea;
@@ -82,7 +86,7 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   width: min(100%, 48rem);
   min-height: 100vh;
   margin: 0 auto;
-  padding: max(0.7rem, env(safe-area-inset-top)) 0.8rem calc(5.4rem + env(safe-area-inset-bottom));
+  padding: 0 0.8rem calc(5.4rem + env(safe-area-inset-bottom));
 }
 .topbar {
   position: sticky;
@@ -92,28 +96,17 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin: -0.7rem -0.8rem 0.65rem;
-  padding: max(0.7rem, env(safe-area-inset-top)) 0.8rem 0.7rem;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 94%, transparent);
-  backdrop-filter: blur(14px);
+  margin: 0 -0.8rem 0.65rem;
+  padding: calc(env(safe-area-inset-top) + 0.45rem) 0.8rem 0.45rem;
+  color: var(--header-text);
+  background: var(--header);
 }
 .brand { display: flex; align-items: center; min-width: 0; gap: 0.65rem; }
-.brand-mark {
-  display: grid;
-  width: 2.55rem;
-  height: 2.55rem;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid var(--nav-border);
-  border-radius: 0.72rem;
-  color: var(--nav-text);
-  background: var(--nav-selected);
-  font-size: 0.92rem;
-  font-weight: 850;
-}
-.brand h1 { overflow: hidden; margin: 0; font-size: clamp(1.15rem, 5vw, 1.55rem); text-overflow: ellipsis; white-space: nowrap; }
-.top-actions { display: flex; flex: 0 0 auto; gap: 0.38rem; }
+.brand h1 { overflow: hidden; margin: 0; font-size: clamp(1.05rem, 4.6vw, 1.3rem); text-overflow: ellipsis; white-space: nowrap; }
+.top-actions { display: flex; flex: 0 0 auto; gap: 0.1rem; }
+.topbar .icon-button { width: 2.9rem; min-height: 2.9rem; border: 0; border-radius: 50%; color: var(--header-text); background: transparent; }
+.topbar .icon-button:hover:not(:disabled), .topbar .icon-button:active:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.topbar .icon-button:disabled { opacity: 0.38; }
 .icon-button { display: grid; width: 2.75rem; min-height: 2.75rem; padding: 0; place-items: center; font-size: 1.25rem; }
 #installButton { width: 100%; min-height: 2.7rem; margin-bottom: 0.6rem; }
 h1, h2, h3, p { margin-top: 0; }
@@ -237,10 +230,11 @@ figcaption i.inferred { border-top-style: solid; border-color: var(--measured); 
 .summary-room { display: flex; align-items: center; justify-content: space-between; gap: 0.65rem; padding: 0.68rem 0; border-bottom: 1px solid var(--border); }
 .summary-room:last-child { border-bottom: 0; }
 .summary-room span { display: block; color: var(--muted); font-size: 0.84rem; }
-.bottom-nav { position: fixed; z-index: 22; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: min(100%, 48rem); margin: auto; padding: 0.42rem 0.55rem calc(0.42rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 96%, transparent); backdrop-filter: blur(14px); }
-.nav-button { display: grid; min-width: 0; min-height: 3.65rem; padding: 0.3rem 0.2rem; place-items: center; gap: 0.12rem; border-color: transparent; border-radius: 0.65rem; color: var(--muted); background: transparent; font-size: 0.72rem; }
-.nav-button span:first-child { font-size: 1.25rem; line-height: 1; }
-.nav-button.active { color: var(--nav-text); background: var(--nav-selected); border-color: var(--nav-border); }
+.bottom-nav { position: fixed; z-index: 22; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: min(100%, 48rem); margin: auto; padding: 0 0 env(safe-area-inset-bottom); border-top: 1px solid var(--border); background: var(--surface); }
+.nav-button { display: grid; min-width: 0; min-height: 3.6rem; padding: 0.4rem 0.2rem 0.35rem; place-items: center; align-content: center; gap: 0.18rem; border: 0; border-radius: 0; color: var(--muted); background: transparent; font-size: 0.72rem; font-weight: 600; }
+.nav-button svg { width: 1.55rem; height: 1.55rem; }
+.nav-button.active { color: var(--nav-text); background: transparent; box-shadow: inset 0 0.2rem 0 var(--nav-text); }
+.nav-button.active svg { stroke-width: 2.4; }
 dialog { width: min(calc(100% - 2rem), 28rem); padding: 0; border: 1px solid var(--border); border-radius: 0.95rem; color: var(--text); background: var(--surface); box-shadow: 0 1.2rem 4rem rgba(0, 0, 0, 0.24); }
 dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px); }
 .dialog-body { padding: 1rem; }
@@ -272,7 +266,7 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .canvas-data-inputs { position: fixed; left: 50%; bottom: 0; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .canvas-data-inputs input { width: 1px; min-height: 1px; padding: 0; border: 0; opacity: 0.01; }
 .plan-stage { margin-top: 0.65rem; padding: 0.2rem; border: 0; background: var(--field); }
-.plan-stage canvas { height: clamp(20rem, 46dvh, 28rem); min-height: 0; aspect-ratio: auto; touch-action: none; }
+.plan-stage canvas { height: clamp(20rem, 46dvh, 28rem); min-height: 0; aspect-ratio: auto; touch-action: pan-y; }
 .plan-tip { justify-content: center; padding: 0.35rem 0.2rem; text-align: center; }
 .object-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; margin-top: 0.65rem; }
 .tool-button { display: grid; min-width: 0; min-height: 3.6rem; margin: 0; padding: 0.5rem 0.35rem; place-items: center; gap: 0.1rem; font-size: 0.78rem; }
