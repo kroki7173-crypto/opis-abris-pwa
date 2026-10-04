@@ -1,4 +1,4 @@
-const CACHE = "opis-abris-shell-v18";
+const CACHE = "opis-abris-shell-v19";
 const SHELL = [
   "./",
   "./index.html",
@@ -36,7 +36,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   event.respondWith(
-    fetch(event.request).then((response) => {
+    // no-cache: revalidate with the server so the browser HTTP cache cannot mix an old page with a new script.
+    fetch(event.request, { cache: "no-cache" }).then((response) => {
       const copy = response.clone();
       caches.open(CACHE).then((cache) => cache.put(event.request, copy));
       return response;

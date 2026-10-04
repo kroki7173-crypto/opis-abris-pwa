@@ -128,6 +128,9 @@ function showError(error) {
   elements.errorMessage.hidden = false;
   elements.errorMessage.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
+// An unexpected failure must be visible on the phone, not leave the screen silently dead.
+window.addEventListener("error", (event) => showError("Ошибка приложения: " + (event.message || "неизвестная")));
+window.addEventListener("unhandledrejection", (event) => showError("Ошибка приложения: " + (event.reason?.message ?? event.reason)));
 function clearError() {
   elements.errorMessage.hidden = true;
   elements.errorMessage.textContent = "";
@@ -396,7 +399,7 @@ function initializeUi() {
 }
 function syncHeaderTitle() {
   const address = (currentScreen === "start" || !packageData ? elements.address.value : packageData.address).trim();
-  elements.headerTitle.textContent = address || "Новый замер";
+  if (elements.headerTitle) elements.headerTitle.textContent = address || "Новый замер";
 }
 // One finger pans the whole plan, two fingers zoom about their midpoint; a double tap resets the view.
 function installPlanGestures() {
@@ -1267,7 +1270,7 @@ function renderOpenings() {
   if (!room) return;
   const editingOpening = room.openings.find((item) => item.id === editingOpeningId);
   if (editingOpeningId && !editingOpening) clearOpeningEdit(false);
-  elements.openingEditPanel.hidden = !editingOpening;
+  if (elements.openingEditPanel) elements.openingEditPanel.hidden = !editingOpening;
   elements.openingsRoomName.textContent = room.name;
   syncWallOptions(elements.openingWall, room);
   const wallIndex = Math.min(Math.max(Number(elements.openingWall.value) || 0, 0), room.walls.length - 1);
