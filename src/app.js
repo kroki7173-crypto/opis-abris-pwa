@@ -49,9 +49,9 @@ const ids = [
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
   "backButton", "saveRoomButton", "openingCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
-  "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
+  "openingEditPanel", "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText",
-  "interiorsButton", "interiorBackButton", "interiorCanvas", "interiorWall",
+  "interiorBackButton", "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
   "interiorPartition", "interiorDoorWidth", "interiorDoorWall", "storageFields",
   "addInteriorButton", "interiorCancelEditButton", "interiorList", "interiorDoneButton",
@@ -741,6 +741,32 @@ function distanceToCanvasSegment(x, y, a, b) {
   const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / lengthSquared));
   return Math.hypot(x - (a[0] + dx * t), y - (a[1] + dy * t));
 }
+// Canvas-space outline of a room, used to tell a tap inside the room from a tap on its wall.
+function canvasRoomOutline(canvas, room) {
+  if (isPolygonRoom(room)) {
+    const box = polygonBox(canvas, room);
+    return roomPoints(room).slice(0, -1).map((point) => roomPointToCanvas(room, box, point));
+  }
+  const box = roomBox(canvas, room);
+  return [[box.left, box.bottom], [box.right, box.bottom], [box.right, box.top], [box.left, box.top]];
+}
+function tapIsInsideRoom(canvas, room, x, y) {
+  const outline = canvasRoomOutline(canvas, room);
+  let inside = false;
+  for (let index = 0, previous = outline.length - 1; index < outline.length; previous = index, index += 1) {
+    const [xi, yi] = outline[index];
+    const [xj, yj] = outline[previous];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  if (!inside) return false;
+  let nearest = Infinity;
+  for (let index = 0; index < outline.length; index += 1) {
+    nearest = Math.min(nearest, distanceToCanvasSegment(x, y, outline[index], outline[(index + 1) % outline.length]));
+  }
+  // Walls get a wide touch zone; only a tap well inside the room counts as "inside".
+  return nearest > canvas.width * 0.14;
+}
+
 function nearestWallIndex(canvas, room, x, y) {
   if (isPolygonRoom(room)) {
     const box = polygonBox(canvas, room);
@@ -1057,8 +1083,6 @@ function clearOpeningEdit(resetFields = true) {
   editingOpeningId = null;
   openingPlacementActive = false;
   openingOffsetTouched = false;
-  elements.addOpeningButton.textContent = "Поставить на план";
-  elements.openingCancelEditButton.hidden = true;
   if (!resetFields) return;
   elements.openingWall.value = "0";
   elements.openingOffset.value = "0";
@@ -1243,8 +1267,7 @@ function renderOpenings() {
   if (!room) return;
   const editingOpening = room.openings.find((item) => item.id === editingOpeningId);
   if (editingOpeningId && !editingOpening) clearOpeningEdit(false);
-  elements.addOpeningButton.textContent = editingOpening ? "Сохранить изменения" : "Поставить на план";
-  elements.openingCancelEditButton.hidden = !editingOpening;
+  elements.openingEditPanel.hidden = !editingOpening;
   elements.openingsRoomName.textContent = room.name;
   syncWallOptions(elements.openingWall, room);
   const wallIndex = Math.min(Math.max(Number(elements.openingWall.value) || 0, 0), room.walls.length - 1);
@@ -1258,7 +1281,6 @@ function renderOpenings() {
   );
   elements.wallLockHint.hidden = !selectedFullConnection;
   elements.addOpeningButton.disabled = selectedFullConnection;
-  elements.addOpeningButton.hidden = !openingPlacementActive;
   const displayRoom = editingOpening
     ? { ...room, openings: room.openings.filter((item) => item.id !== editingOpeningId) }
     : room;
@@ -2270,11 +2292,6 @@ elements.openingCancelEditButton.addEventListener("click", () => {
   renderOpenings();
   schedulePersist();
 });
-elements.interiorsButton.addEventListener("click", () => {
-  clearOpeningEdit();
-  clearInteriorEdit();
-  showScreen("interior");
-});
 elements.interiorBackButton.addEventListener("click", () => {
   clearInteriorEdit();
   showScreen("openings");
@@ -2499,21 +2516,46 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   }
   selectVoiceTargetById(wallIndex % 2 === 0 ? "adjacentFirstLength" : "adjacentSecondLength");
   startContextVoice();
-});elements.openingCanvas.addEventListener("click", (event) => {
+});elements.openingCanvas.addEventListener("click", async (event) => {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
   const bounds = elements.openingCanvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
+  if (tapIsInsideRoom(elements.openingCanvas, room, x, y)) {
+    clearOpeningEdit();
+    clearInteriorEdit();
+    showScreen("interior");
+    return;
+  }
   const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
+  const wall = room.walls[wallIndex];
+  const hit = room.openings.find((opening) => {
+    if (opening.wall_id !== wall.id) return false;
+    const [x1, y1, x2, y2] = canvasWallSegment(elements.openingCanvas, room, wallIndex, opening);
+    return distanceToCanvasSegment(x, y, [x1, y1], [x2, y2]) < 36;
+  });
+  if (hit) {
+    // A placed door leads into the room behind it; a window or passage opens for editing (doors via the list).
+    if (connectionForOpening(packageData, currentRoomIndex, hit.id)) return;
+    if (hit.kind === "door") openAdjacent(currentRoomIndex, hit.id);
+    else beginOpeningEdit(hit);
+    return;
+  }
+  // Keep the chosen type; only the width goes back to its default so an edited size does not carry over.
+  clearOpeningEdit(false);
+  setKind(openingKind, true, false);
   elements.openingWall.value = String(wallIndex);
-  openingOffsetTouched = false;
   centerOpeningOffset();
-  openingPlacementActive = true;
+  try {
+    packageData = addOpeningToPackage(packageData, currentRoomIndex, openingFormValues());
+  } catch (error) {
+    showError(error);
+    return;
+  }
+  elements.openingOffset.value = "0";
   renderOpenings();
-  selectVoiceTargetById("openingOffset");
-  startContextVoice();
-  schedulePersist();
+  await persist();
 });
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();

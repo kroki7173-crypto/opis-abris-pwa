@@ -116,7 +116,7 @@
       <figure class="preview plan-stage opening-stage">
         <canvas id="openingCanvas" width="720" height="560"
                 aria-label="План комнаты. Нажмите на стену, чтобы поставить дверь или окно"></canvas>
-        <figcaption class="plan-tip">Выберите стену: проём встанет по центру, расстояние до угла можно поменять</figcaption>
+        <figcaption class="plan-tip">Стена — проём. Дверь — следующая комната. Внутри комнаты — кладовая</figcaption>
       </figure>
 
       <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
@@ -125,6 +125,7 @@
         <button type="button" data-kind="passage" class="type"><span aria-hidden="true">□</span>Проём</button>
       </div>
 
+      <div id="openingEditPanel" hidden>
       <div class="opening-readout">
         <button id="openingOffsetButton" class="dimension-chip quiet" type="button">До угла <span id="openingCornerName"></span> <strong id="openingOffsetValue">0</strong> м</button>
         <button id="openingWidthButton" class="dimension-chip quiet" type="button">Ширина <strong id="openingWidthValue">0,80</strong> м</button>
@@ -132,16 +133,16 @@
       <div id="widthPresets" class="presets" hidden aria-label="Быстрые размеры"></div>
       <p id="wallLockHint" class="message notice" hidden>Эта стена уже связана с другой комнатой.</p>
       <div class="opening-edit-actions">
-        <button id="addOpeningButton" class="primary wide" type="button">Поставить на план</button>
-        <button id="openingCancelEditButton" class="quiet wide" type="button" hidden>Отменить правку</button>
+        <button id="addOpeningButton" class="primary wide" type="button">Сохранить изменения</button>
+        <button id="openingCancelEditButton" class="quiet wide" type="button">Отменить правку</button>
+      </div>
       </div>
       <button id="openingThicknessPrompt" class="thickness-prompt" type="button" hidden>
         <span id="openingThicknessText">Укажите толщину стены</span><span aria-hidden="true">🎙</span>
       </button>
 
       <div id="openingList" class="opening-list"></div>
-      <button id="interiorsButton" class="secondary wide" type="button">Кладовые, колонны и проёмы</button>
-      <button id="finishButton" class="secondary wide" type="button">Готово — общий план</button>
+      <button id="finishButton" class="primary wide" type="button">Готово</button>
     </section>
     <section id="interiorScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
