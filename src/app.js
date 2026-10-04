@@ -49,7 +49,7 @@ const ids = [
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
   "backButton", "saveRoomButton", "openingCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
-  "openingOffsetButton", "openingOffsetValue", "openingWidthButton", "openingWidthValue",
+  "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText",
   "interiorsButton", "interiorBackButton", "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
@@ -118,6 +118,8 @@ let roomPulseFrame = null;
 let openingPulseFrame = null;
 let adjacentPulseFrame = null;
 let openingPlacementActive = false;
+// The openings distance is measured from the corner nearest to the tap; storage stays from the wall start.
+let openingCorner = "start";
 let planZoom = 1;
 let planPinch = null;
 let celebratedRevision = null;
@@ -449,6 +451,7 @@ function draftValue() {
       openingKind,
       openingWall: elements.openingWall.value,
       openingOffset: elements.openingOffset.value,
+      openingCorner,
       openingWidth: elements.openingWidth.value,
       interiorKind,
       interiorWall: elements.interiorWall.value,
@@ -497,6 +500,7 @@ function restoreForm(draft) {
   elements.openingWall.dataset.wanted = form.openingWall || "0";
   elements.openingWall.value = form.openingWall || "0";
   elements.openingOffset.value = form.openingOffset ?? "0";
+  openingCorner = form.openingCorner === "end" ? "end" : "start";
   elements.openingWidth.value = form.openingWidth || "0,80";
   elements.interiorWall.dataset.wanted = form.interiorWall || "0";
   elements.interiorWall.value = form.interiorWall || "0";
@@ -982,11 +986,22 @@ function renderPresets() {
   }
 }
 
+function openingOffsetFromStart(room, wallIndex) {
+  const raw = elements.openingOffset.value;
+  if (openingCorner !== "end") return raw;
+  const offset = decimal(raw);
+  const width = decimal(elements.openingWidth.value);
+  if (!Number.isFinite(offset) || !Number.isFinite(width)) return raw;
+  return String(Math.round((room.walls[wallIndex].length_m - offset - width) * 1000) / 1000);
+}
+
 function openingFormValues() {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  const wallIndex = Number(elements.openingWall.value);
   return {
     kind: openingKind,
-    wallIndex: Number(elements.openingWall.value),
-    offsetM: elements.openingOffset.value,
+    wallIndex,
+    offsetM: room ? openingOffsetFromStart(room, wallIndex) : elements.openingOffset.value,
     widthM: elements.openingWidth.value,
   };
 }
@@ -994,6 +1009,7 @@ function openingFormValues() {
 function clearOpeningEdit(resetFields = true) {
   editingOpeningId = null;
   openingPlacementActive = false;
+  openingCorner = "start";
   elements.addOpeningButton.textContent = "Поставить на план";
   elements.openingCancelEditButton.hidden = true;
   if (!resetFields) return;
@@ -1007,6 +1023,7 @@ function beginOpeningEdit(opening) {
   if (!room) return;
   editingOpeningId = opening.id;
   openingPlacementActive = true;
+  openingCorner = "start";
   elements.openingWall.value = String(room.walls.findIndex((wall) => wall.id === opening.wall_id));
   elements.openingOffset.value = String(opening.offset_m).replace(".", ",");
   elements.openingWidth.value = String(opening.width_m).replace(".", ",");
@@ -1186,6 +1203,7 @@ function renderOpenings() {
   const wallIndex = Math.min(Math.max(Number(elements.openingWall.value) || 0, 0), room.walls.length - 1);
   elements.openingWall.value = String(wallIndex);
   elements.openingOffsetValue.textContent = elements.openingOffset.value || "—";
+  elements.openingCornerName.textContent = cornerName(openingCorner === "end" ? (wallIndex + 1) % room.walls.length : wallIndex);
   elements.openingWidthValue.textContent = elements.openingWidth.value || "—";
   const selectedConnections = connectionsForWall(packageData, currentRoomIndex, room.walls[wallIndex].id);
   const selectedFullConnection = selectedConnections.some(
@@ -1202,7 +1220,7 @@ function renderOpenings() {
   const draw = () => {
     drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive && !selectedFullConnection);
     if (openingPlacementActive && !selectedFullConnection) {
-      const offset = decimal(elements.openingOffset.value);
+      const offset = decimal(openingOffsetFromStart(room, wallIndex));
       const width = decimal(elements.openingWidth.value);
       if (Number.isFinite(offset) && offset >= 0 && width > 0 && offset + width <= room.walls[wallIndex].length_m) {
         drawOpeningSymbol(
@@ -1236,7 +1254,7 @@ function renderOpenings() {
     const thickness = opening.wall_thickness_m > 0
       ? ` · стена ${opening.wall_thickness_m.toFixed(2)} м`
       : " · толщина не указана";
-    text.textContent = `${typeName(opening.kind)} ${opening.width_m.toFixed(2)} м · от угла ${opening.offset_m.toFixed(2)} м${thickness}`;
+    text.textContent = `${typeName(opening.kind)} ${opening.width_m.toFixed(2)} м · от угла ${cornerName(Math.max(room.walls.findIndex((wall) => wall.id === opening.wall_id), 0))} ${opening.offset_m.toFixed(2)} м${thickness}`;
     const actions = document.createElement("div");
     actions.className = "row-actions";
     if (opening.kind !== "window") {
@@ -2089,6 +2107,7 @@ for (const input of [elements.roomName, elements.firstLength, elements.secondLen
 }
 for (const input of [elements.openingWall, elements.openingOffset, elements.openingWidth]) {
   input.addEventListener("input", () => {
+    if (input === elements.openingWall) openingCorner = "start";
     openingPlacementActive = true;
     renderOpenings();
     schedulePersist();
@@ -2271,6 +2290,7 @@ elements.createAdjacentButton.addEventListener("click", async () => {
     pendingShape = null;
     editingOpeningId = null;
     openingPlacementActive = false;
+    openingCorner = "start";
     elements.openingWall.value = "1";
     elements.openingOffset.value = "0";
     showScreen("openings");
@@ -2436,7 +2456,11 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   const bounds = elements.openingCanvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
-  elements.openingWall.value = String(nearestWallIndex(elements.openingCanvas, room, x, y));
+  const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
+  elements.openingWall.value = String(wallIndex);
+  const [sx, sy, ex, ey] = canvasWallSegment(elements.openingCanvas, room, wallIndex, { offset_m: 0, width_m: room.walls[wallIndex].length_m });
+  const along = ((x - sx) * (ex - sx) + (y - sy) * (ey - sy)) / (((ex - sx) ** 2 + (ey - sy) ** 2) || 1);
+  openingCorner = along > 0.5 ? "end" : "start";
   openingPlacementActive = true;
   renderOpenings();
   selectVoiceTargetById("openingOffset");
