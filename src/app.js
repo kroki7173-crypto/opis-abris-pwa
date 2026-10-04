@@ -49,7 +49,7 @@ const ids = [
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
   "backButton", "saveRoomButton", "openingCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
-  "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
+  "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingCornerButton", "openingCornerOther", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText",
   "interiorsButton", "interiorBackButton", "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
@@ -118,7 +118,7 @@ let roomPulseFrame = null;
 let openingPulseFrame = null;
 let adjacentPulseFrame = null;
 let openingPlacementActive = false;
-// The openings distance is measured from the corner nearest to the tap; storage stays from the wall start.
+// The openings distance is measured from the corner the technician picks (button); storage stays from the wall start.
 let openingCorner = "start";
 let planZoom = 1;
 let planPinch = null;
@@ -1203,7 +1203,10 @@ function renderOpenings() {
   const wallIndex = Math.min(Math.max(Number(elements.openingWall.value) || 0, 0), room.walls.length - 1);
   elements.openingWall.value = String(wallIndex);
   elements.openingOffsetValue.textContent = elements.openingOffset.value || "—";
-  elements.openingCornerName.textContent = cornerName(openingCorner === "end" ? (wallIndex + 1) % room.walls.length : wallIndex);
+  const startName = cornerName(wallIndex);
+  const endName = cornerName((wallIndex + 1) % room.walls.length);
+  elements.openingCornerName.textContent = openingCorner === "end" ? endName : startName;
+  elements.openingCornerOther.textContent = openingCorner === "end" ? startName : endName;
   elements.openingWidthValue.textContent = elements.openingWidth.value || "—";
   const selectedConnections = connectionsForWall(packageData, currentRoomIndex, room.walls[wallIndex].id);
   const selectedFullConnection = selectedConnections.some(
@@ -2216,6 +2219,22 @@ elements.addOpeningButton.addEventListener("click", async () => {
     showError(error);
   }
 });
+elements.openingCornerButton.addEventListener("click", () => {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room) return;
+  const wallIndex = Number(elements.openingWall.value);
+  // Keep the door where it is: re-express the typed distance from the other corner.
+  const offset = decimal(elements.openingOffset.value);
+  const width = decimal(elements.openingWidth.value);
+  if (Number.isFinite(offset) && Number.isFinite(width)) {
+    const flipped = Math.round((room.walls[wallIndex].length_m - offset - width) * 1000) / 1000;
+    if (flipped >= 0) elements.openingOffset.value = String(flipped).replace(".", ",");
+  }
+  openingCorner = openingCorner === "end" ? "start" : "end";
+  openingPlacementActive = true;
+  renderOpenings();
+  schedulePersist();
+});
 elements.openingCancelEditButton.addEventListener("click", () => {
   clearOpeningEdit();
   renderOpenings();
@@ -2457,10 +2476,9 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
   const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
+  const previousWall = elements.openingWall.value;
   elements.openingWall.value = String(wallIndex);
-  const [sx, sy, ex, ey] = canvasWallSegment(elements.openingCanvas, room, wallIndex, { offset_m: 0, width_m: room.walls[wallIndex].length_m });
-  const along = ((x - sx) * (ex - sx) + (y - sy) * (ey - sy)) / (((ex - sx) ** 2 + (ey - sy) ** 2) || 1);
-  openingCorner = along > 0.5 ? "end" : "start";
+  if (String(wallIndex) !== previousWall) openingCorner = "start";
   openingPlacementActive = true;
   renderOpenings();
   selectVoiceTargetById("openingOffset");
