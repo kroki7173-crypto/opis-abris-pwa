@@ -623,6 +623,11 @@ function showScreen(name) {
   for (const key of ["measure", "objects", "settings", "help"]) elements[key + "NavButton"].classList.toggle("active", tab === key);
   refreshVoiceTarget();
 }
+// An object belongs in "Объекты" from "Начать" on, before anything is measured (Bolat, 05.10.2026): the list is
+// where it is found again, opened or deleted.
+function keptInCatalog(pkg) {
+  return Boolean(pkg?.package_id && String(pkg.address ?? "").trim());
+}
 function draftValue() {
   return {
     version: 4,
@@ -668,7 +673,7 @@ async function persist() {
   try {
     const value = draftValue();
     await saveDraft(value);
-    if (value.package?.rooms?.length) await saveSurvey(value);
+    if (keptInCatalog(value.package)) await saveSurvey(value);
     if (!historyRestoring) recordHistory(value);
     setSaveStatus("");
   } catch {
@@ -2230,6 +2235,18 @@ function currentDraftFromRecord(record) {
 }
 
 async function openSurveyRecord(record) {
+  if (!record.package?.rooms?.length) {
+    // Nothing measured yet: the object opens where its work stopped, on the first room.
+    const draft = { ...record };
+    delete draft.storage_kind;
+    delete draft.saved_at;
+    await saveDraft(draft);
+    restoreForm(draft);
+    packageData = draft.package;
+    currentRoomIndex = 0;
+    showScreen("room");
+    return;
+  }
   validatePackage(record.package);
   const draft = currentDraftFromRecord(record);
   await saveDraft(draft);
@@ -2261,7 +2278,8 @@ async function renderSurveyCatalog() {
     const title = document.createElement("strong");
     title.textContent = record.package.address;
     const details = document.createElement("span");
-    details.textContent = recordDate(record) + " · комнат: " + record.package.rooms.length;
+    details.textContent = recordDate(record) + (record.package.rooms.length
+      ? " · комнат: " + record.package.rooms.length : " · замер не начат");
     text.append(title, details);
 
     const actions = document.createElement("div");
@@ -2364,7 +2382,7 @@ async function sharePackage() {
 }
 async function leaveCurrentForCatalog(message) {
   clearTimeout(saveTimer);
-  if (packageData?.rooms?.length) await saveSurvey(draftValue());
+  if (keptInCatalog(packageData)) await saveSurvey(draftValue());
   await clearDraft();
   packageData = null;
   currentRoomIndex = 0;
@@ -2962,7 +2980,7 @@ async function start() {
     const draft = await loadDraft();
     restoreForm(draft);
     packageData = draft?.package ?? null;
-    if (packageData?.rooms?.length) {
+    if (keptInCatalog(packageData)) {
       await saveSurvey({ ...draft, version: 4 });
     }
     if (packageData?.rooms?.length) {
@@ -2978,7 +2996,7 @@ async function start() {
       } else {
         showScreen(restoredScreen);
       }
-    } else if (packageData) {
+    } else if (editingAddress()) {
       showScreen(draft?.screen === "shape" && shapeState.context === "first" ? "shape" : "room");
     } else {
       showScreen("start");

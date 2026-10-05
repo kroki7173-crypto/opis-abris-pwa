@@ -23,6 +23,8 @@ export function sortSurveyRecords(records) {
 export function surveysForLocalDay(records, day = new Date()) {
   const key = localDateKey(day);
   return sortSurveyRecords(records).filter((record) => {
+    // An object with only an address has nothing for the desktop yet; it stays out of the day's ZIP.
+    if (!record.package.rooms?.length) return false;
     try {
       return localDateKey(record.package.created_at) === key;
     } catch {
