@@ -172,6 +172,8 @@ let entrance = newEntrance();
 let thicknessChipTimer = null;
 // Tapping the wall opposite an already measured one and giving another size means the room is not a rectangle.
 let roomOppositeTap = null;
+// The same for the room behind a door: the wall opposite the door named different opens the shape screen.
+let adjacentOppositeTap = null;
 let celebratedRevision = null;
 
 function showError(error) {
@@ -813,15 +815,21 @@ function previewRoom() {
   }
   return room;
 }
+// Vertical room for a drawing: a canvas may keep its top free (`topReserve`, e.g. under the plan overview).
+function drawingBand(canvas, margin) {
+  const top = Math.max(margin, canvas.topReserve ?? 0);
+  return { top, height: Math.max(canvas.height - top - margin, 40) };
+}
 function roomBox(canvas, room) {
   const margin = 84;
+  const band = drawingBand(canvas, margin);
   const width = room.walls[0].length_m;
   const height = room.walls[1].length_m;
-  const scale = Math.min((canvas.width - 2 * margin) / width, (canvas.height - 2 * margin) / height);
+  const scale = Math.min((canvas.width - 2 * margin) / width, band.height / height);
   const drawWidth = width * scale;
   const drawHeight = height * scale;
   const left = (canvas.width - drawWidth) / 2;
-  const top = (canvas.height - drawHeight) / 2;
+  const top = band.top + (band.height - drawHeight) / 2;
   return { left, top, right: left + drawWidth, bottom: top + drawHeight, scale, width, height };
 }
 function openingSegment(box, wallIndex, opening) {
@@ -925,10 +933,11 @@ function polygonBox(canvas, room) {
   const ys = local.map((point) => point[1]);
   const spanX = Math.max(Math.max(...xs) - Math.min(...xs), 0.1);
   const spanY = Math.max(Math.max(...ys) - Math.min(...ys), 0.1);
-  const scale = Math.min((canvas.width - 2 * margin) / spanX, (canvas.height - 2 * margin) / spanY);
+  const band = drawingBand(canvas, margin);
+  const scale = Math.min((canvas.width - 2 * margin) / spanX, band.height / spanY);
   return {
     left: (canvas.width - spanX * scale) / 2 - Math.min(...xs) * scale,
-    bottom: (canvas.height - spanY * scale) / 2 + Math.max(...ys) * scale,
+    bottom: band.top + (band.height - spanY * scale) / 2 + Math.max(...ys) * scale,
     scale,
   };
 }
@@ -1269,12 +1278,22 @@ function hintText() {
     if (openingStep?.step === "thickness") {
       return `Нажмите «Толщина стены у ${of} ?» и назовите толщину. Потом откроется комната за ${placing.kind === "door" ? "дверью" : "проёмом"}.`;
     }
-    return "Есть ещё двери или окна? Нажмите на стену, где они есть. Чтобы перейти в следующую комнату, нажмите на её дверь.";
+    if ((packageData?.rooms?.length ?? 0) > 1) {
+      return "Отметьте двери и окна этой комнаты: нажмите на стену. Через новую дверь откроется следующая комната. Вернуться в другую комнату — нажмите ← и коснитесь её на плане.";
+    }
+    return "Есть ещё двери или окна? Нажмите на стену, где они есть. Через новую дверь откроется следующая комната.";
+  }
+  if (currentScreen === "adjacent") {
+    if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
+      return "Стена с дверью другой длины. Нажмите «До двери» и назовите расстояние от угла до двери.";
+    }
+    return "Комната за дверью. Нажмите на мигающую красную стену и назовите её длину. Если стена с дверью другой длины, сначала нажмите на неё.";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
-    return validationIssues(packageData).length
-      ? "Нажмите на замечание — откроется место, где его исправить."
-      : "Нажмите «Передать в настольное приложение».";
+    if (validationIssues(packageData).length) return "Нажмите на замечание — откроется место, где его исправить.";
+    return confirmedPlan === planSignature(packageData)
+      ? "Нажмите «Передать в настольное приложение»."
+      : "Коснитесь комнаты на плане, чтобы продолжить в ней: отметить двери и окна или пройти в следующую.";
   }
   return "";
 }
@@ -1732,7 +1751,12 @@ function renderOpenings() {
     const thickness = opening.wall_thickness_m > 0
       ? ` · стена ${formatLength(opening.wall_thickness_m)} м`
       : " · толщина не указана";
-    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${cornerName(Math.max(room.walls.findIndex((wall) => wall.id === opening.wall_id), 0))} ${formatLength(opening.offset_m)} м${thickness}`;
+    // The distance is shown from the nearer corner of the wall: that is the one the technician measured from.
+    const wallIndex = Math.max(openingWallIndex(room, opening), 0);
+    const fromEnd = room.walls[wallIndex].length_m - opening.offset_m - opening.width_m;
+    const nearEnd = fromEnd < opening.offset_m - 1e-9;
+    const corner = cornerName(nearEnd ? (wallIndex + 1) % room.walls.length : wallIndex);
+    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${corner} ${formatLength(nearEnd ? fromEnd : opening.offset_m)} м${thickness}`;
     const actions = document.createElement("div");
     actions.className = "row-actions";
     if (opening.kind !== "window" && !isEntranceOpening(currentRoomIndex, opening)) {
@@ -2273,16 +2297,10 @@ function renderAdjacent() {
   elements.adjacentPreview.classList.toggle("needs-anchor", mismatch && !bindingComplete);
   elements.adjacentBindingHint.hidden = !mismatch || bindingComplete;
   elements.createAdjacentButton.disabled = !validSizes || !bindingComplete;
-  if (!validSizes) {
-    elements.adjacentStatus.className = "message notice";
-    elements.adjacentStatus.textContent = "Назовите размер красной стены.";
-  } else if (!bindingComplete) {
-    elements.adjacentStatus.className = "message error";
-    elements.adjacentStatus.textContent = "Нужна привязка этой стены к двери.";
-  } else {
-    elements.adjacentStatus.className = "message notice";
-    elements.adjacentStatus.textContent = "Комната привязана правильно.";
-  }
+  // Only a problem is written under the drawing; what to do next is in the hint.
+  elements.adjacentStatus.hidden = !validSizes || bindingComplete;
+  elements.adjacentStatus.className = "message error";
+  elements.adjacentStatus.textContent = "Нужна привязка этой стены к двери.";
 
   const previewWidth = first > 0 ? first : parentWall.length_m;
   const previewDepth = second > 0 ? second : Math.max(parentWall.length_m * 0.7, 1);
@@ -2335,10 +2353,18 @@ function renderAdjacent() {
     }
   }
   if (shapeProblem) {
+    elements.adjacentStatus.hidden = false;
     elements.adjacentStatus.className = "message error";
     elements.adjacentStatus.textContent = shapeProblem;
     elements.createAdjacentButton.disabled = true;
   }
+  // The drawing keeps clear of the plan overview in the corner (Bolat, 05.10.2026).
+  const canvasBox = elements.adjacentCanvas.getBoundingClientRect();
+  const insetBox = elements.adjacentOverviewCanvas.getBoundingClientRect();
+  // topReserve: canvas y below which the room may be drawn (overview bottom plus room for the wall length label).
+  elements.adjacentCanvas.topReserve = canvasBox.height && insetBox.height
+    ? (insetBox.bottom - canvasBox.top) * elements.adjacentCanvas.height / canvasBox.height + 46
+    : 0;
   const activeWall = mismatch && !bindingComplete ? 0 : shaped ? null : second > 0 ? null : 1;
   elements.adjacentCanvas.previewRoom = canvasRoom;
   cancelAnimationFrame(adjacentPulseFrame);
@@ -2354,7 +2380,9 @@ function renderAdjacent() {
     if (currentScreen === "adjacent" && activeWall !== null) adjacentPulseFrame = requestAnimationFrame(draw);
   };
   draw();
-}function validationIssues(pkg) {
+  syncHint();
+}
+function validationIssues(pkg) {
   const issues = [];
   try {
     validatePackage(pkg);
@@ -2966,6 +2994,33 @@ elements.adjacentBackButton.addEventListener("click", () => {
   showScreen("openings");
   persist();
 });
+// The room behind a door is created as soon as it is measured: there is no "Готово — войти" (Bolat, 05.10.2026).
+function maybeCreateAdjacent() {
+  if (currentScreen !== "adjacent") return;
+  try { renderAdjacent(); } catch (error) { showError(error); return; }
+  const measured = decimal(elements.adjacentSecondLength.value) > 0 || pendingShape;
+  if (measured && !elements.createAdjacentButton.disabled) elements.createAdjacentButton.click();
+}
+for (const input of [elements.adjacentFirstLength, elements.adjacentSecondLength, elements.adjacentAnchorOffset]) {
+  input.addEventListener("change", () => {
+    if (input === elements.adjacentFirstLength && adjacentOppositeTap) {
+      // The wall opposite the door named different: the room is not a rectangle, its own screen takes over.
+      const tap = adjacentOppositeTap;
+      adjacentOppositeTap = null;
+      const given = decimal(input.value);
+      if (given > 0 && Math.abs(given - decimal(tap.baseline)) >= 0.005) {
+        input.value = tap.baseline;
+        const text = (value) => String(value).replace(".", ",");
+        const second = decimal(elements.adjacentSecondLength.value) > 0 ? text(decimal(elements.adjacentSecondLength.value)) : "";
+        openShape("adjacent");
+        shapeState = { ...shapeState, count: 4, walls: [text(decimal(tap.baseline)), second, text(given), second], angles: ["", "90", "90", "90"], active: null };
+        showScreen("shape");
+        return;
+      }
+    }
+    maybeCreateAdjacent();
+  });
+}
 elements.createAdjacentButton.addEventListener("click", async () => {
   try {
     packageData = createAdjacentRoom(packageData, {
@@ -3030,6 +3085,7 @@ elements.shapeDoneButton.addEventListener("click", async () => {
       pendingShape = structuredClone({ count, walls, angles, clockwise, name });
       showScreen("adjacent");
       await persist();
+      maybeCreateAdjacent();
       return;
     }
     if (!confirmFirstRoomReplacement()) return;
@@ -3170,6 +3226,7 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
     }
     return;
   }
+  adjacentOppositeTap = wallIndex === 2 ? { baseline: elements.adjacentFirstLength.value } : null;
   selectVoiceTargetById(wallIndex % 2 === 0 ? "adjacentFirstLength" : "adjacentSecondLength");
   startContextVoice();
 });elements.openingCanvas.addEventListener("click", async (event) => {

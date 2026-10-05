@@ -218,11 +218,13 @@
         <canvas id="adjacentOverviewCanvas" class="overview-inset" width="360" height="240" aria-label="Общий план с новой комнатой"></canvas>
         <canvas id="adjacentCanvas" width="720" height="560"
                 aria-label="Новая комната с дверью. Нажмите стену для замера или число для исправления"></canvas>
-        <figcaption class="plan-tip"><span id="adjacentBindingHint" hidden></span>Коснитесь красной стены и назовите размер</figcaption>
+        <figcaption class="plan-tip"><span id="adjacentBindingHint" hidden>Стена с дверью другой длины — привяжите дверь к углу ниже.</span></figcaption>
       </figure>
 
-      <p id="adjacentStatus" class="message notice"></p>
-      <button id="adjacentShapeButton" class="quiet wide" type="button">Комната не прямоугольная</button>
+      <p id="adjacentStatus" class="message notice" hidden></p>
+      <!-- No "Комната не прямоугольная" and no "Готово — войти" (Bolat, 05.10.2026): the shape screen opens when
+           the opposite wall is named different, and the room is created as soon as it is measured. -->
+      <button id="adjacentShapeButton" class="quiet wide" type="button" hidden>Комната не прямоугольная</button>
       <p id="adjacentShapeNote" class="hint" hidden></p>
       <div id="adjacentAnchorPanel" class="anchor-panel" hidden>
         <p id="adjacentAnchorLead" class="lead"></p>
@@ -231,7 +233,7 @@
           <button id="adjacentAnchorOffsetButton" class="dimension-chip quiet" type="button">До двери <strong id="adjacentAnchorOffsetValue">—</strong> м</button>
         </div>
       </div>
-      <button id="createAdjacentButton" class="primary wide" type="button">Готово — войти в комнату</button>
+      <button id="createAdjacentButton" class="primary wide" type="button" hidden>Готово — войти в комнату</button>
     </section>
     <section id="shapeScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
