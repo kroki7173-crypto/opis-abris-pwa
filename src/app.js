@@ -957,8 +957,9 @@ function formatLength(value) {
   return value.toFixed(2).replace(".", ",");
 }
 function drawCornerLetters(context, corners, outward) {
-  context.fillStyle = uiColor("--muted", "#4a5568");
-  context.font = "700 17px system-ui";
+  // As large as the wall lengths: on a phone the canvas is drawn at about half size.
+  context.fillStyle = uiColor("--button", "#285778");
+  context.font = "800 26px system-ui";
   context.textAlign = "center";
   context.textBaseline = "middle";
   corners.forEach((corner, index) => {
@@ -968,7 +969,7 @@ function drawCornerLetters(context, corners, outward) {
     const second = outward(corner, next);
     const bisector = [first[0] + second[0], first[1] + second[1]];
     const length = Math.hypot(bisector[0], bisector[1]) || 1;
-    context.fillText(cornerName(index), corner[0] + bisector[0] / length * 26, corner[1] + bisector[1] / length * 26);
+    context.fillText(cornerName(index), corner[0] + bisector[0] / length * 30, corner[1] + bisector[1] / length * 30);
   });
 }
 function drawPolygonRoom(canvas, room, selectedWall, attention) {
@@ -1048,7 +1049,7 @@ function strokeWallSegment(context, segment, pulsing, color) {
   context.stroke();
   context.restore();
 }
-function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds = ["firstLength", "secondLength"]) {
+function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds = ["firstLength", "secondLength"], letters = true) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
   const text = uiColor("--text", "#1a1a1a");
@@ -1121,7 +1122,11 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
       bottom: label.y + (label.rotate ? 58 : 25),
     });
   }
-
+  // Corner letters, so "от угла A 2,00 м" in the list can be found on the drawing (PWA only, not exported).
+  if (letters) {
+    const corners = [[box.left, box.bottom], [box.right, box.bottom], [box.right, box.top], [box.left, box.top]];
+    drawCornerLetters(context, corners, canvasOutward(corners));
+  }
 }
 function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   const context = canvas.getContext("2d");
@@ -1522,9 +1527,9 @@ function renderOpenings() {
     row.className = "opening-row";
     const text = document.createElement("span");
     const thickness = opening.wall_thickness_m > 0
-      ? ` · стена ${opening.wall_thickness_m.toFixed(2)} м`
+      ? ` · стена ${formatLength(opening.wall_thickness_m)} м`
       : " · толщина не указана";
-    text.textContent = `${typeName(opening.kind)} ${opening.width_m.toFixed(2)} м · от угла ${cornerName(Math.max(room.walls.findIndex((wall) => wall.id === opening.wall_id), 0))} ${opening.offset_m.toFixed(2)} м${thickness}`;
+    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${cornerName(Math.max(room.walls.findIndex((wall) => wall.id === opening.wall_id), 0))} ${formatLength(opening.offset_m)} м${thickness}`;
     const actions = document.createElement("div");
     actions.className = "row-actions";
     if (opening.kind !== "window") {
@@ -2141,6 +2146,7 @@ function renderAdjacent() {
       activeWall,
       activeWall !== null,
       ["adjacentFirstLength", "adjacentSecondLength"],
+      false,
     );
     if (currentScreen === "adjacent" && activeWall !== null) adjacentPulseFrame = requestAnimationFrame(draw);
   };
