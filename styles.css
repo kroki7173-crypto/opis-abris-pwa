@@ -3,6 +3,7 @@
   font-family: "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --bg: #f0f0f0;
   --header: #153e60;
+  --unmeasured: #8a93a3;
   --header-text: #ffffff;
   --surface: #f0f0f0;
   --field: #ffffff;
@@ -34,6 +35,7 @@
   color-scheme: dark;
   --bg: #1f2228;
   --header: #15181d;
+  --unmeasured: #a1a9b6;
   --header-text: #e8ecf3;
   --surface: #272b33;
   --field: #2c313a;
@@ -308,10 +310,10 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 #adjacentAnchorPanel { margin-top: 0.55rem; }
 #adjacentAnchorPanel .lead { font-size: 0.84rem; }
 .adjacent-stage canvas.overview-inset { position: absolute; z-index: 3; top: 0.65rem; left: 0.65rem; width: 6rem; height: 4.2rem; min-height: 0; border: 1px solid var(--nav-border); border-radius: 0.55rem; background: var(--field); box-shadow: 0 0.3rem 0.9rem rgba(16, 35, 58, 0.14); pointer-events: none; }
-.final-plan-stage canvas { height: clamp(18rem, 44dvh, 30rem); touch-action: none; }
+.final-plan-stage canvas { height: clamp(18rem, 44dvh, 30rem); touch-action: pan-y; }
 .validation-panel { margin-top: 0.65rem; padding: 0.8rem 0.9rem; border: 1px solid var(--border); border-radius: 0.75rem; line-height: 1.4; }
 .validation-panel.ready { color: var(--busy); border-color: color-mix(in srgb, var(--busy) 55%, var(--border)); background: var(--busy-bg); }
-.validation-panel.needs-work { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+.validation-panel.needs-work { color: var(--nav-text); border-color: var(--nav-border); background: var(--nav-selected); }
 .validation-panel ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 .validation-panel ul:empty { display: none; }
 .final-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; margin-top: 0.55rem; }

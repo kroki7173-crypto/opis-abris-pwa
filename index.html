@@ -76,12 +76,14 @@
         <input id="secondLength" inputmode="decimal" placeholder="2,40">
         <label for="wallThickness">Толщина стены</label>
         <input id="wallThickness" inputmode="decimal" placeholder="0,10">
+        <label for="doorAnchor">Расстояние от двери до стены</label>
+        <input id="doorAnchor" inputmode="decimal" placeholder="0,50">
       </div>
 
       <figure class="preview plan-stage" data-mic-host>
         <canvas id="roomCanvas" width="720" height="560"
                 aria-label="План комнаты. Нажмите на стену для голосового ввода или на число для ручного ввода"></canvas>
-        <figcaption class="plan-tip">Коснитесь стены и назовите размер</figcaption>
+        <figcaption id="roomTip" class="plan-tip">Коснитесь стены и назовите размер</figcaption>
       </figure>
 
     </section>
