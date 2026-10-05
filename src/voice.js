@@ -143,7 +143,7 @@ function recognitionError(code) {
     "audio-capture": "Микрофон недоступен.",
     "no-speech": "Речь не услышана. Нажмите микрофон и повторите.",
     "language-not-supported": "Офлайн-пакет русского языка недоступен.",
-    network: "Локальное распознавание недоступно. Значение можно ввести вручную.",
+    network: "Нет связи для распознавания речи. Значение можно ввести вручную.",
     aborted: "Голосовой ввод остановлен.",
   }[code] ?? "Не удалось распознать речь. Повторите или введите значение вручную.";
 }
@@ -156,11 +156,10 @@ export function createVoiceController(scope, onStatus = () => {}) {
   function capability() {
     if (!Recognition) return { available: false, reason: "Браузер не поддерживает распознавание речи." };
     try {
+      // Decision of Bolat (05.10.2026): dictation works everywhere the browser offers it; where the browser
+      // cannot recognise on the device, the audio goes to the browser vendor's service.
       const probe = new Recognition();
-      if (!("processLocally" in probe)) {
-        return { available: false, reason: "Браузер не гарантирует локальное распознавание без отправки аудио." };
-      }
-      return { available: true, reason: "" };
+      return { available: true, local: "processLocally" in probe, reason: "" };
     } catch {
       return { available: false, reason: "Не удалось запустить распознавание речи." };
     }
@@ -169,18 +168,18 @@ export function createVoiceController(scope, onStatus = () => {}) {
   async function prepare() {
     const state = capability();
     if (!state.available) throw new Error(state.reason);
+    if (!state.local) return { local: false };
     if (typeof Recognition.available === "function") {
       const availability = await Recognition.available({ langs: ["ru-RU"], processLocally: true });
-      if (availability === "unavailable") throw new Error("Офлайн-распознавание русского языка недоступно.");
+      if (availability === "unavailable") return { local: false };
       if (availability === "downloadable" || availability === "downloading") {
-        if (typeof Recognition.install !== "function") {
-          throw new Error("Браузер не умеет установить русский офлайн-пакет.");
-        }
+        if (typeof Recognition.install !== "function") return { local: false };
         onStatus("Устанавливается русский голосовой пакет…", false);
         const installed = await Recognition.install({ langs: ["ru-RU"], processLocally: true });
-        if (!installed) throw new Error("Не удалось установить русский офлайн-пакет.");
+        if (!installed) return { local: false };
       }
     }
+    return { local: true };
   }
 
   function stop() {
@@ -192,13 +191,13 @@ export function createVoiceController(scope, onStatus = () => {}) {
 
   async function listen({ mode, onValue, onListening = () => {}, timeoutMs = 8000 }) {
     stop();
-    await prepare();
+    const { local } = await prepare();
     const recognition = new Recognition();
     recognition.lang = "ru-RU";
     recognition.continuous = false;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
-    recognition.processLocally = true;
+    if (local) recognition.processLocally = true;
     const session = { cancelled: false, timer: null };
     active = recognition;
     activeSession = session;
