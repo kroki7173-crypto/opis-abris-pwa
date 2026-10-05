@@ -214,10 +214,10 @@ html[data-screen="room"], html[data-screen="room"] body { height: 100%; overflow
 #roomScreen { touch-action: none; }
 #roomScreen .plan-stage canvas { height: max(12rem, calc(100dvh - 14.8rem - env(safe-area-inset-top) - env(safe-area-inset-bottom))); }
 [data-mic-host] { position: relative; }
-[data-mic-host] .context-mic.docked { position: absolute; top: 0.6rem; right: 0.6rem; z-index: 3; margin: 0; }
+[data-mic-host] .context-mic.docked { position: absolute; top: 0.6rem; right: 0.6rem; bottom: auto; z-index: 3; margin: 0; }
 .address-field { position: relative; }
 .address-field input { padding-right: 3.6rem; }
-.address-field .context-mic.docked { position: absolute; top: 50%; right: 0.3rem; margin: 0; transform: translateY(-50%); }
+.address-field .context-mic.docked { position: absolute; top: 50%; right: 0.3rem; bottom: auto; margin: 0; transform: translateY(-50%); }
 .context-mic.docked { position: static; width: 2.75rem; min-height: 2.75rem; margin-left: auto; flex: 0 0 auto; box-shadow: 0 0.3rem 0.85rem rgba(30, 122, 69, 0.2); font-size: 1.05rem; }
 @keyframes mic-breathe { from { opacity: 0.58; transform: scale(0.88); } to { opacity: 0; transform: scale(1.3); } }
 @keyframes level { from { transform: scaleY(0.55); } to { transform: scaleY(1); } }
@@ -336,3 +336,8 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
   .interior-edit-actions, .opening-edit-actions { grid-template-columns: 1fr; }
   .shape-fields { grid-template-columns: 1fr; }
 }
+
+/* Errors and voice status float over the screen so they never push the plan around. */
+.toasts { position: fixed; z-index: 30; top: calc(env(safe-area-inset-top) + 3.9rem); right: 0; left: 0; display: grid; gap: 0.4rem; width: min(calc(100% - 1.6rem), 46rem); margin: 0 auto; pointer-events: none; }
+.toasts > * { position: static; margin: 0; pointer-events: auto; box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.25); }
+.toasts > [hidden] { display: none; }

@@ -2284,7 +2284,8 @@ function confirmFirstRoomReplacement() {
 async function saveFirstRoom(room) {
   packageData.rooms = [room];
   packageData.connections = [];
-  packageData.address = elements.address.value.trim();
+  // The address belongs to the object since "Начать"; an emptied start-screen field must not wipe it.
+  packageData.address = elements.address.value.trim() || packageData.address;
   packageData.updated_at = new Date().toISOString();
   currentRoomIndex = 0;
   pendingAdjacent = null;
