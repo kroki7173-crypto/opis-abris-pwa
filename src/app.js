@@ -1893,11 +1893,16 @@ function openingPiece(canvas, room, opening, side) {
     : { offset_m: opening.offset_m + opening.width_m, width_m: Math.max(0, length - opening.offset_m - opening.width_m) };
   return canvasWallSegment(canvas, room, wallIndex, piece);
 }
-// Windows are in outer walls: they take the perimeter thickness named at the entrance and ask nothing
-// (Bolat, 05.10.2026). Only doors and passages ask: partitions are 0,1 or 0,15-0,25, each its own.
-function outerWallThickness(room) {
-  const entrance = packageData?.rooms?.[0]?.openings?.[0];
-  return entrance?.wall_thickness_m > 0 ? entrance.wall_thickness_m : room.wall_thickness_m;
+// Windows are in the facade, often thicker than the stair wall with the entrance (Bolat, 06.10.2026, by an official
+// plan): the first window of the flat asks its wall thickness once, every later window takes it and asks nothing.
+// Doors and passages always ask: partitions are 0,1 or 0,15-0,25, each its own.
+function knownWindowThickness(exceptId) {
+  for (const room of packageData?.rooms ?? []) {
+    for (const opening of room.openings ?? []) {
+      if (opening.kind === "window" && opening.id !== exceptId && opening.wall_thickness_m > 0) return opening.wall_thickness_m;
+    }
+  }
+  return null;
 }
 function openingWallIndex(room, opening) {
   return room.walls.findIndex((wall) => wall.id === opening.wall_id);
@@ -1946,12 +1951,14 @@ function startOpeningDistance(side) {
   selectVoiceTargetById("openingOffset");
   startContextVoice();
 }
-// Placed and anchored: a window takes the outer wall thickness; a door or passage asks for it.
+// Placed and anchored: a window takes the thickness of the windows before it; the first window, a door or a
+// passage asks for it.
 function finishOpeningPlacement(id) {
   const room = packageData.rooms[currentRoomIndex];
   const opening = room.openings.find((item) => item.id === id);
-  if (opening.kind === "window" && !(opening.wall_thickness_m > 0)) {
-    packageData = setOpeningWallThickness(packageData, currentRoomIndex, id, String(outerWallThickness(room)));
+  const windowThickness = knownWindowThickness(id);
+  if (opening.kind === "window" && !(opening.wall_thickness_m > 0) && windowThickness) {
+    packageData = setOpeningWallThickness(packageData, currentRoomIndex, id, String(windowThickness));
   }
   const placed = packageData.rooms[currentRoomIndex].openings.find((item) => item.id === id);
   const editing = Boolean(openingStep?.editing);
