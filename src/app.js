@@ -386,6 +386,9 @@ function resumeWork() {
   const needsAdjacent = screen === "adjacent" || (screen === "shape" && shapeState.context === "adjacent");
   if (needsAdjacent && !pendingAdjacent) screen = rooms ? "openings" : "room";
   showScreen(screen);
+  // A room behind a door measured before (e.g. in a version that still had the "войти" button) is created
+  // on return instead of leaving the technician on a screen with nothing to press.
+  if (screen === "adjacent") setTimeout(maybeCreateAdjacent, 0);
 }
 // Step 1 opens calm, with the hint and the field in view; the keyboard comes only when the technician
 // taps the field or asked to change the address (`focus`).
