@@ -42,27 +42,27 @@
     </div>
     </div>
 
-    <section id="startScreen" class="card screen">
-      <p class="step">Объект</p>
-      <h2>Какой объект измеряем?</h2>
-      <label for="address">Адрес</label>
-      <div class="address-field">
-        <input id="address" autocomplete="street-address" maxlength="1000"
-               placeholder="Улица, дом, квартира">
+    <section id="startScreen" class="card screen" data-mode="new" hidden>
+      <div id="newObjectBlock">
+        <h2>Адрес объекта</h2>
+        <div class="address-field">
+          <input id="address" autocomplete="street-address" maxlength="1000"
+                 placeholder="Улица, дом, квартира" aria-label="Адрес объекта">
+        </div>
+        <button id="startButton" class="primary" disabled>Начать</button>
       </div>
-      <p class="hint">Адрес и размеры сохраняются только в браузере этого телефона.</p>
-      <button id="startButton" class="primary" disabled>Начать с прихожей</button>
 
-      <div class="catalog-block">
+      <div id="catalogBlock" class="catalog-block">
         <div class="catalog-heading">
           <h3>Сохранённые объекты</h3>
           <span id="surveyCount" class="counter">0</span>
         </div>
-        <p id="surveyEmpty" class="hint">На этом телефоне пока нет сохранённых замеров.</p>
+        <p id="surveyEmpty" class="hint">Здесь появятся замеры, как только вы их сделаете.</p>
         <div id="surveyList" class="survey-list"></div>
         <button id="shareTodayButton" class="secondary wide" disabled>
           Поделиться сегодняшними замерами (ZIP)
         </button>
+        <button id="newSurveyButton" class="primary wide" type="button">Новый замер</button>
       </div>
     </section>
 
@@ -254,8 +254,8 @@
       <span id="summaryAddress" hidden></span>
       <figure class="preview plan-stage final-plan-stage">
         <canvas id="planCanvas" width="720" height="620"
-                aria-label="Общий план. Разведите два пальца для увеличения"></canvas>
-        <figcaption class="plan-tip">Разведите два пальца, чтобы увеличить план</figcaption>
+                aria-label="Общий план. Коснитесь комнаты, чтобы изменить её"></canvas>
+        <figcaption class="plan-tip">Коснитесь комнаты, чтобы изменить. Двигайте и разводите пальцами</figcaption>
       </figure>
 
       <section id="validationPanel" class="validation-panel" aria-live="polite">
@@ -266,8 +266,6 @@
 
       <button id="shareButton" class="primary wide">Передать в настольное приложение</button>
       <div class="final-actions">
-        <button id="editOpeningsButton" class="quiet" type="button">Исправить план</button>
-        <button id="objectListButton" class="quiet" type="button">Объекты</button>
       </div>
       <button id="editButton" hidden type="button">Изменить размеры первой комнаты</button>
       <button id="newButton" class="secondary wide">Новый замер</button>

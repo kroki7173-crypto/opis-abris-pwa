@@ -341,3 +341,7 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .toasts { position: fixed; z-index: 30; top: calc(env(safe-area-inset-top) + 3.9rem); right: 0; left: 0; display: grid; gap: 0.4rem; width: min(calc(100% - 1.6rem), 46rem); margin: 0 auto; pointer-events: none; }
 .toasts > * { position: static; margin: 0; pointer-events: auto; box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.25); }
 .toasts > [hidden] { display: none; }
+
+#startScreen[data-mode="new"] #catalogBlock, #startScreen[data-mode="list"] #newObjectBlock { display: none; }
+#startScreen #newObjectBlock h2 { margin-bottom: 0.9rem; }
+.validation-panel .issue-link { width: 100%; min-height: 2.6rem; margin: 0.15rem 0; padding: 0.55rem 0.7rem; border: 0; border-radius: 0.6rem; color: inherit; background: transparent; font-weight: 600; text-align: left; text-decoration: underline; }

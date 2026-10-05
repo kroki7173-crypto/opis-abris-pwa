@@ -60,8 +60,8 @@ const ids = [
   "adjacentStatus", "adjacentBindingHint", "adjacentAnchorPanel", "adjacentAnchorLead",
   "adjacentAnchorCorner", "adjacentAnchorOffset",
   "adjacentAnchorCornerButton", "adjacentAnchorCornerValue", "adjacentAnchorOffsetButton", "adjacentAnchorOffsetValue",
-  "adjacentBackButton", "createAdjacentButton", "shareButton", "objectListButton", "editButton",
-  "editOpeningsButton", "newButton", "roomCanvas", "planCanvas", "saveStatus",
+  "adjacentBackButton", "createAdjacentButton", "shareButton", "editButton",
+  "newSurveyButton", "newButton", "roomCanvas", "planCanvas", "saveStatus",
   "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
 
@@ -124,7 +124,8 @@ let planView = { zoom: 1, x: 0, y: 0 };
 // "Объекты" is highlighted only when the technician asked for the list; the start screen reached otherwise is "Замер".
 // The first room starts with this thickness; the technician names the real one at the first door or window.
 const PROVISIONAL_WALL_THICKNESS = "0,1";
-let objectsNavRequested = false;
+// The start screen has two faces: "new" (address entry, tab "Замер") and "list" (saved objects, tab "Объекты").
+let startMode = "new";
 // Tapping the wall opposite an already measured one and giving another size means the room is not a rectangle.
 let roomOppositeTap = null;
 let celebratedRevision = null;
@@ -372,7 +373,7 @@ function initializeUi() {
     if (!packageData && !elements.address.value.trim()) elements.address.focus();
   });
   elements.objectsNavButton.addEventListener("click", () => {
-    objectsNavRequested = true;
+    startMode = "list";
     showScreen("start");
   });
   elements.openingOffsetButton.addEventListener("click", () => {
@@ -403,12 +404,21 @@ function syncHeaderTitle() {
   const address = (currentScreen === "start" || !packageData ? elements.address.value : packageData.address).trim();
   if (elements.headerTitle) elements.headerTitle.textContent = address || "Новый замер";
 }
-// One finger pans the whole plan, two fingers zoom about their midpoint; a double tap resets the view.
+// One finger pans the whole plan, two fingers zoom about their midpoint, a short tap on a room opens it.
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const [xi, yi] = polygon[index];
+    const [xj, yj] = polygon[previous];
+    if ((yi > point[1]) !== (yj > point[1]) && point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
 function installPlanGestures() {
   const canvas = elements.planCanvas;
   const pointers = new Map();
   let last = null;
-  let lastTap = 0;
+  let tap = null;
   const toCanvas = (clientX, clientY) => {
     const bounds = canvas.getBoundingClientRect();
     return [(clientX - bounds.left) * canvas.width / bounds.width, (clientY - bounds.top) * canvas.height / bounds.height];
@@ -424,19 +434,14 @@ function installPlanGestures() {
     try { canvas.setPointerCapture(event.pointerId); } catch { /* Capture only keeps the drag alive outside the canvas. */ }
     pointers.set(event.pointerId, toCanvas(event.clientX, event.clientY));
     last = snapshot();
-    if (pointers.size === 1) {
-      const now = Date.now();
-      if (now - lastTap < 320) {
-        planView = { zoom: 1, x: 0, y: 0 };
-        redraw();
-      }
-      lastTap = now;
-    }
+    if (pointers.size === 1) tap = { id: event.pointerId, at: last.mid, time: Date.now(), moved: false };
+    else if (tap) tap.moved = true;
   });
   canvas.addEventListener("pointermove", (event) => {
     if (!pointers.has(event.pointerId)) return;
     pointers.set(event.pointerId, toCanvas(event.clientX, event.clientY));
     const current = snapshot();
+    if (tap && Math.hypot(current.mid[0] - tap.at[0], current.mid[1] - tap.at[1]) > 12) tap.moved = true;
     const centre = [canvas.width / 2, canvas.height / 2];
     const factor = last.spread > 0 && current.spread > 0 ? current.spread / last.spread : 1;
     const zoom = Math.min(8, Math.max(0.5, planView.zoom * factor));
@@ -451,8 +456,20 @@ function installPlanGestures() {
     redraw();
   });
   const release = (event) => {
+    const ended = tap && tap.id === event.pointerId && event.type === "pointerup" && !tap.moved && Date.now() - tap.time < 500
+      ? toCanvas(event.clientX, event.clientY) : null;
     pointers.delete(event.pointerId);
     last = pointers.size ? snapshot() : null;
+    if (!pointers.size) tap = null;
+    // A short tap on a room opens it for changes.
+    if (ended) {
+      const shape = (canvas.roomShapes ?? []).find((room) => pointInPolygon(ended, room.points));
+      if (shape) {
+        currentRoomIndex = shape.index;
+        clearOpeningEdit();
+        showScreen("openings");
+      }
+    }
   };
   canvas.addEventListener("pointerup", release);
   canvas.addEventListener("pointercancel", release);
@@ -461,6 +478,7 @@ function installPlanGestures() {
 function showScreen(name) {
   currentScreen = name;
   document.documentElement.dataset.screen = name;
+  if (name === "start") elements.startScreen.dataset.mode = startMode;
   syncHeaderTitle();
   if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
@@ -484,8 +502,8 @@ function showScreen(name) {
   } catch (error) {
     showError(error);
   }
-  const objectMode = name === "start" && objectsNavRequested;
-  objectsNavRequested = false;
+  const objectMode = name === "start" && startMode === "list";
+  startMode = "new";
   elements.measureNavButton.classList.toggle("active", !objectMode);
   elements.objectsNavButton.classList.toggle("active", objectMode);
   refreshVoiceTarget();
@@ -981,6 +999,7 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = field;
   context.fillRect(0, 0, canvas.width, canvas.height);
+  canvas.roomShapes = [];
   if (!pkg?.rooms?.length) return;
   const roomPointSets = pkg.rooms.map((room) => roomPoints(room));
   const points = roomPointSets.flatMap((room) => room.slice(0, -1));
@@ -1003,6 +1022,7 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   roomPointSets.forEach((roomPointsValue, roomIndex) => {
     const room = pkg.rooms[roomIndex];
     const transformed = roomPointsValue.map(transform);
+    canvas.roomShapes.push({ index: roomIndex, points: transformed });
     context.fillStyle = surface;
     context.strokeStyle = measured;
     context.lineWidth = 7;
@@ -1963,16 +1983,35 @@ function renderAdjacent() {
   try {
     validatePackage(pkg);
   } catch (error) {
-    issues.push(error instanceof Error ? error.message : String(error));
+    const text = error instanceof Error ? error.message : String(error);
+    issues.push({ text, action: /^Адрес/.test(text) ? { type: "address" } : null });
   }
   for (const [roomIndex, room] of (pkg?.rooms ?? []).entries()) {
     for (const opening of room.openings ?? []) {
       if (!(opening.wall_thickness_m > 0)) {
-        issues.push(`Помещение ${roomIndex + 1}: не указана толщина стены у ${typeName(opening.kind).toLowerCase()}.`);
+        issues.push({
+          text: `Помещение ${roomIndex + 1}: не указана толщина стены у ${{ door: "двери", window: "окна", passage: "проёма" }[opening.kind] ?? "проёма"}.`,
+          action: { type: "room", roomIndex },
+        });
       }
     }
   }
-  return [...new Set(issues)];
+  const seen = new Set();
+  return issues.filter((issue) => !seen.has(issue.text) && seen.add(issue.text));
+}
+// Every warning leads to the place where it is fixed.
+function followIssue(action) {
+  if (action.type === "address") {
+    startMode = "new";
+    showScreen("start");
+    elements.address.value = packageData?.address ?? "";
+    elements.startButton.disabled = !elements.address.value.trim();
+    elements.address.focus();
+  } else if (action.type === "room") {
+    currentRoomIndex = action.roomIndex;
+    clearOpeningEdit();
+    showScreen("openings");
+  }
 }
 function renderSummary() {
   if (!packageData?.rooms?.length) return;
@@ -1987,7 +2026,16 @@ function renderSummary() {
   elements.validationList.replaceChildren();
   for (const issue of issues) {
     const item = document.createElement("li");
-    item.textContent = issue;
+    if (issue.action) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "issue-link";
+      link.textContent = issue.text + " Исправить →";
+      link.addEventListener("click", () => followIssue(issue.action));
+      item.append(link);
+    } else {
+      item.textContent = issue.text;
+    }
     elements.validationList.append(item);
   }
   elements.shareButton.disabled = issues.length > 0;
@@ -2255,6 +2303,13 @@ for (const button of interiorKindButtons) button.addEventListener("click", () =>
 
 elements.startButton.addEventListener("click", async () => {
   try {
+    if (packageData && !String(packageData.address ?? "").trim()) {
+      // An object that lost its address (legacy draft): the address entered here completes it, no new object.
+      packageData.address = elements.address.value.trim();
+      showScreen(packageData.rooms?.length ? "done" : "room");
+      await persist();
+      return;
+    }
     packageData = createPackage(elements.address.value);
     // A new object never inherits the previous room's sizes.
     elements.firstLength.value = "";
@@ -2485,16 +2540,9 @@ elements.editButton.addEventListener("click", () => {
   if (isPolygonRoom(packageData?.rooms?.[0])) openShape("first");
   else showScreen("room");
 });
-elements.editOpeningsButton.addEventListener("click", () => {
-  currentRoomIndex = 0;
-  clearOpeningEdit();
-  showScreen("openings");
-});
 elements.shareButton.addEventListener("click", sharePackage);
 elements.shareTodayButton.addEventListener("click", shareTodaySurveys);
-elements.objectListButton.addEventListener("click", () => {
-  leaveCurrentForCatalog("Объект сохранён; открыт список замеров").catch(showError);
-});
+elements.newSurveyButton.addEventListener("click", () => elements.newButton.click());
 elements.newButton.addEventListener("click", () => {
   leaveCurrentForCatalog("Предыдущий объект сохранён; можно начинать новый замер")
     .then(() => elements.address.focus())
