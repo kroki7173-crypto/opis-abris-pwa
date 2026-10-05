@@ -1,4 +1,4 @@
-const CACHE = "opis-abris-shell-v34";
+const CACHE = "opis-abris-shell-v35";
 const SHELL = [
   "./",
   "./index.html",

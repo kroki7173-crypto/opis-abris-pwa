@@ -97,6 +97,15 @@ const voiceController = createVoiceController(window, setVoiceStatus);
 
 let packageData = null;
 let currentScreen = "start";
+// The screen where the measuring stopped: "Главная" returns there after "Объекты" or "Настройки"
+// (Bolat, 05.10.2026), never to the final plan unless the technician finished with "Готово".
+const WORK_SCREENS = ["room", "openings", "interior", "adjacent", "shape", "done"];
+let workScreen = null;
+// Plan state confirmed with "Готово"; "Отличная работа" is shown only for exactly that plan.
+let confirmedPlan = null;
+function planSignature(pkg) {
+  return JSON.stringify([pkg?.rooms ?? [], pkg?.connections ?? []]);
+}
 let currentRoomIndex = 0;
 let pendingAdjacent = null;
 let shapeState = newShapeState();
@@ -352,6 +361,15 @@ function syncAddressStep() {
   elements.startButton.disabled = !elements.address.value.trim();
   syncRememberAddress();
 }
+function resumeWork() {
+  const rooms = packageData?.rooms?.length ?? 0;
+  let screen = WORK_SCREENS.includes(workScreen) ? workScreen : rooms ? "openings" : "room";
+  if (!rooms && ["openings", "interior", "adjacent", "done"].includes(screen)) screen = "room";
+  // The room behind a door and its shape screen need the door they start from; without it, back to the doors.
+  const needsAdjacent = screen === "adjacent" || (screen === "shape" && shapeState.context === "adjacent");
+  if (needsAdjacent && !pendingAdjacent) screen = rooms ? "openings" : "room";
+  showScreen(screen);
+}
 function openAddressStep() {
   startMode = "new";
   if (editingAddress()) elements.address.value = packageData.address;
@@ -447,7 +465,7 @@ function initializeUi() {
       openAddressStep();
       return;
     }
-    showScreen(packageData.rooms?.length ? "done" : "room");
+    resumeWork();
   });
   elements.headerTitle.addEventListener("click", () => {
     if (currentScreen !== "start") openAddressStep();
@@ -585,6 +603,7 @@ window.addEventListener("resize", () => {
 });
 function showScreen(name) {
   currentScreen = name;
+  if (WORK_SCREENS.includes(name)) workScreen = name;
   document.documentElement.dataset.screen = name;
   if (name === "start") {
     elements.startScreen.dataset.mode = startMode;
@@ -628,6 +647,8 @@ function draftValue() {
   return {
     version: 4,
     screen: currentScreen,
+    workScreen,
+    confirmedPlan,
     package: packageData,
     currentRoomIndex,
     pendingAdjacent,
@@ -717,6 +738,8 @@ function restoreForm(draft) {
   shapeState = restoreShapeState(draft?.shape, newShapeState());
   pendingShape = restoreShapeState(draft?.pendingShape, null);
   entrance = restoreEntrance(draft?.entrance);
+  workScreen = WORK_SCREENS.includes(draft?.workScreen) ? draft.workScreen : null;
+  confirmedPlan = typeof draft?.confirmedPlan === "string" ? draft.confirmedPlan : null;
   activeRoomWall = entrance.step === "thickness" ? null
     : entrance.step === "anchor" ? null : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
@@ -2199,9 +2222,12 @@ function renderSummary() {
   if (!packageData?.rooms?.length) return;
   elements.summaryAddress.textContent = packageData.address;
   const issues = validationIssues(packageData);
-  // Green means "all done" (Bolat, 05.10.2026): an unfinished plan is drawn in neutral grey.
-  elements.planCanvas.planReady = issues.length === 0;
+  // "Отличная работа" and the green plan only after "Готово", for exactly the plan that was confirmed
+  // (Bolat, 05.10.2026); passing by the plan on the way is not the end of the survey.
+  const finished = issues.length === 0 && confirmedPlan === planSignature(packageData);
+  elements.planCanvas.planReady = finished;
   drawPlan(elements.planCanvas, packageData, planView);
+  elements.validationPanel.hidden = !issues.length && !finished;
   elements.validationPanel.classList.toggle("ready", issues.length === 0);
   elements.validationPanel.classList.toggle("needs-work", issues.length > 0);
   elements.validationTitle.textContent = issues.length
@@ -2223,7 +2249,7 @@ function renderSummary() {
     elements.validationList.append(item);
   }
   elements.shareButton.disabled = issues.length > 0;
-  if (!issues.length && celebratedRevision !== packageData.updated_at) {
+  if (finished && celebratedRevision !== packageData.updated_at) {
     celebratedRevision = packageData.updated_at;
     if (navigator.vibrate) navigator.vibrate([55, 35, 85]);
   }
@@ -2247,6 +2273,9 @@ function currentDraftFromRecord(record) {
     editingOpeningId: null,
     openingPlacementActive: false,
     editingInteriorId: null,
+    // Opens where the work stopped; a finished plan opens as finished.
+    workScreen: record.workScreen ?? "openings",
+    confirmedPlan: record.confirmedPlan ?? null,
     form: record.form ?? {},
   };
 }
@@ -2276,7 +2305,7 @@ async function openSurveyRecord(record) {
   editingInteriorId = null;
   elements.address.value = packageData.address;
   fillRoomForm(packageData.rooms[0]);
-  showScreen("done");
+  resumeWork();
   setSaveStatus("Открыт сохранённый объект");
 }
 
@@ -2565,7 +2594,7 @@ elements.startButton.addEventListener("click", async () => {
       // "Сохранить адрес": the current object keeps its plan and gets the corrected address.
       packageData.address = elements.address.value;
       packageData.updated_at = new Date().toISOString();
-      showScreen(packageData.rooms?.length ? "done" : "room");
+      resumeWork();
       await persist();
       return;
     }
@@ -2578,6 +2607,7 @@ elements.startButton.addEventListener("click", async () => {
     elements.wallThickness.value = "";
     elements.roomName.value = "Прихожая";
     entrance = newEntrance();
+    confirmedPlan = null;
     elements.doorAnchor.value = "";
     activeRoomWall = 0;
     currentRoomIndex = 0;
@@ -2709,6 +2739,8 @@ elements.finishButton.addEventListener("click", async () => {
     if (missingThickness) throw new Error("Укажите толщину стены для каждого проёма.");
     validatePackage(packageData);
     pendingAdjacent = null;
+    // "Готово" is the technician's word that the survey is finished.
+    confirmedPlan = planSignature(packageData);
     showScreen("done");
     await persist();
   } catch (error) {
@@ -3006,16 +3038,9 @@ async function start() {
     if (packageData?.rooms?.length) {
       currentRoomIndex = Math.min(Math.max(currentRoomIndex, 0), packageData.rooms.length - 1);
       fillRoomForm(packageData.rooms[0]);
-      const restoredScreen = ["openings", "interior", "adjacent", "shape", "done"].includes(draft.screen)
-        ? draft.screen
-        : "done";
-      const needsAdjacent = restoredScreen === "adjacent" ||
-        (restoredScreen === "shape" && shapeState.context === "adjacent");
-      if (needsAdjacent && !pendingAdjacent) {
-        showScreen("openings");
-      } else {
-        showScreen(restoredScreen);
-      }
+      // Back to where the measuring stopped; drafts from before workScreen open on the doors, not the final plan.
+      if (["openings", "interior", "adjacent", "shape", "done"].includes(draft.screen)) workScreen = draft.screen;
+      resumeWork();
     } else if (editingAddress()) {
       showScreen(draft?.screen === "shape" && shapeState.context === "first" ? "shape" : "room");
     } else {
