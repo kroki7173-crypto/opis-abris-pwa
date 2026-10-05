@@ -736,23 +736,27 @@ function isRectangle(room) {
   return room.right_angles && room.walls.length === 4;
 }
 
+function connectionThickness(room, wall, opening, full) {
+  return full ? wallThickness(room, wall) : opening?.wall_thickness_m ?? wallThickness(room, wall);
+}
 function placeChild(parent, child, connection) {
   const parentIndex = parent.walls.findIndex((wall) => wall.id === connection.wall_a_id);
   const childIndex = child.walls.findIndex((wall) => wall.id === connection.wall_b_id);
   const parentWall = parent.walls[parentIndex];
   const childWall = child.walls[childIndex];
-  // Both sides of a shared wall have one thickness, the one named at its door.
-  const thickness = wallThickness(parent, parentWall);
-  setOwnThickness(child, childWall, thickness);
   const openingA = parent.openings.find((item) => item.id === connection.opening_a_id);
   const openingB = child.openings.find((item) => item.id === connection.opening_b_id);
+  const full = (connection.mode ?? "full_wall") === "full_wall";
+  // A room behind a door stands as far as that door's wall is thick: one corridor wall may have doors into rooms
+  // behind partitions of different thickness. A whole shared wall has one thickness.
+  const thickness = connectionThickness(parent, parentWall, openingA, full);
+  setOwnThickness(child, childWall, thickness);
   if (openingA && openingB) {
     openingB.kind = openingA.kind;
     openingB.width_m = openingA.width_m;
     openingA.wall_thickness_m = thickness;
     openingB.wall_thickness_m = thickness;
   }
-  const full = (connection.mode ?? "full_wall") === "full_wall";
   if (full) {
     if (Math.abs(childWall.length_m - parentWall.length_m) > 1e-9) setRoomWallLength(child, childIndex, parentWall.length_m);
     const source = wallOpenings(parent, parentWall.id);
@@ -928,16 +932,21 @@ export function setOpeningWallThickness(pkg, roomIndex, openingId, thicknessM) {
   nextOpening.wall_thickness_m = thickness;
   // Per-wall thickness (Bolat, 05.10.2026): the perimeter has one thickness (the room's), partitions their own.
   setOwnThickness(nextRoom, wall, thickness);
-  // A shared wall is one wall: both sides take the corrected thickness, and the rooms behind it move.
+  // The room behind this door takes the corrected thickness and moves; rooms behind other doors of the same wall
+  // stay where they are. A whole shared wall is one wall: both sides and all its openings change.
   for (const connection of connectionsForWall(next, roomIndex, wall.id)) {
+    const full = (connection.mode ?? "full_wall") === "full_wall";
     const mine = connection.room_a_id === nextRoom.id;
+    if (!full && (mine ? connection.opening_a_id : connection.opening_b_id) !== openingId) continue;
     const other = next.rooms.find((item) => item.id === (mine ? connection.room_b_id : connection.room_a_id));
     const otherWall = other.walls.find((item) => item.id === (mine ? connection.wall_b_id : connection.wall_a_id));
     setOwnThickness(other, otherWall, thickness);
-    for (const item of other.openings) if (item.wall_id === otherWall.id) item.wall_thickness_m = thickness;
-  }
-  for (const item of nextRoom.openings) {
-    if (item.wall_id === wall.id && connectionsForWall(next, roomIndex, wall.id).length) item.wall_thickness_m = thickness;
+    if (full) {
+      for (const item of other.openings) if (item.wall_id === otherWall.id) item.wall_thickness_m = thickness;
+      for (const item of nextRoom.openings) if (item.wall_id === wall.id) item.wall_thickness_m = thickness;
+    } else {
+      other.openings.find((item) => item.id === (mine ? connection.opening_b_id : connection.opening_a_id)).wall_thickness_m = thickness;
+    }
   }
   return finishEdit(next);
 }
@@ -1085,7 +1094,7 @@ export function createAdjacentRoom(pkg, {
   const winding = signedArea(points) > 0 ? 1 : -1;
   const outward = [winding * unit[1], -winding * unit[0]];
   // The new room keeps the perimeter thickness; only the wall it shares is as thick as the door's wall.
-  const shared = wallThickness(parent, wall);
+  const shared = opening.wall_thickness_m ?? wallThickness(parent, wall);
   const placement = {
     name,
     wallThicknessM: parent.wall_thickness_m,
@@ -1354,9 +1363,11 @@ export function validatePackage(pkg) {
       winding * (end[1] - start[1]) / wallLength,
       -winding * (end[0] - start[0]) / wallLength,
     ];
-    // The gap between connected rooms is the shared wall's own thickness, the same from both sides.
-    const thickness = wallThickness(a.room, a.room.walls[aWallIndex]);
-    if (Math.abs(thickness - wallThickness(b.room, b.room.walls[bWallIndex])) > 1e-8) {
+    // The gap between connected rooms is the thickness of the door's wall (a whole shared wall: of that wall),
+    // the same from both sides.
+    const full = mode === "full_wall";
+    const thickness = connectionThickness(a.room, a.room.walls[aWallIndex], openingA, full);
+    if (Math.abs(thickness - connectionThickness(b.room, b.room.walls[bWallIndex], openingB, full)) > 1e-8) {
       throw new Error("Толщина общей стены связанных комнат не совпадает.");
     }
 
