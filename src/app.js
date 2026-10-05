@@ -61,12 +61,12 @@ const ids = [
   "adjacentAnchorCorner", "adjacentAnchorOffset",
   "adjacentAnchorCornerButton", "adjacentAnchorCornerValue", "adjacentAnchorOffsetButton", "adjacentAnchorOffsetValue",
   "adjacentBackButton", "createAdjacentButton", "shareButton", "editButton",
-  "newSurveyButton", "newButton", "doorAnchor", "roomTip", "roomCanvas", "planCanvas", "saveStatus",
+  "newSurveyButton", "newButton", "doorAnchor", "thicknessChip", "roomTip", "roomCanvas", "planCanvas", "saveStatus",
   "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
 
-  "settingsDialog", "settingsClose", "darkThemeSetting", "showThemeControl",
-  "helpDialog", "helpClose", "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
+  "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl",
+  "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -127,22 +127,37 @@ let planView = { zoom: 1, x: 0, y: 0 };
 const PROVISIONAL_WALL_THICKNESS = "0,1";
 // The start screen has two faces: "new" (address entry, tab "Главная") and "list" (saved objects, tab "Объекты").
 let startMode = "new";
-// First-room guide: the entrance door comes first (wall -> distance to the next wall -> wall thickness), then the walls.
+// First-room guide (Bolat, 05.10.2026): the entrance door comes first. Tap the blinking wall -> the door appears;
+// the walls left and right of the door blink in turn -> tap one and name the distance from it to the door ->
+// "Толщина ?" -> the door wall, then the next one.
 const ENTRANCE_WIDTH_M = 0.8;
 function newEntrance() {
-  return { step: "wall", wall: 0, anchor: null, thickness: null };
+  return { step: "wall", wall: 0, side: null, anchor: null, thickness: null };
 }
 function restoreEntrance(value) {
   const steps = ["wall", "anchor", "thickness", "measure"];
   if (!value || !steps.includes(value.step) || !Number.isInteger(value.wall) || value.wall < 0 || value.wall > 3) return newEntrance();
+  const side = ["start", "end"].includes(value.side) ? value.side : null;
   return {
     step: value.step,
     wall: value.wall,
+    // Drafts from before the side choice measured the distance to the wall at the end corner.
+    side: side ?? (Number.isFinite(value.anchor) ? "end" : null),
     anchor: Number.isFinite(value.anchor) ? value.anchor : null,
     thickness: value.thickness ? String(value.thickness) : null,
   };
 }
+// The wall at the start corner of the door wall and the one at its end corner.
+function entranceNeighbour(side) {
+  return side === "start" ? (entrance.wall + 3) % 4 : (entrance.wall + 1) % 4;
+}
+// Offset of the entrance door from the start corner of its wall, or null while it cannot be known.
+function entranceOffset(wallLength) {
+  if (entrance.anchor === null || !entrance.side) return null;
+  return entrance.side === "start" ? entrance.anchor : wallLength - entrance.anchor - ENTRANCE_WIDTH_M;
+}
 let entrance = newEntrance();
+let thicknessChipTimer = null;
 // Tapping the wall opposite an already measured one and giving another size means the room is not a rectangle.
 let roomOppositeTap = null;
 let celebratedRevision = null;
@@ -225,7 +240,7 @@ function refreshVoiceTarget() {
     return;
   }
   const id = defaultVoiceTargetForScreen();
-  elements.contextMicButton.hidden = currentScreen === "done" || !voiceController.capability().available;
+  elements.contextMicButton.hidden = ["done", "settings", "help"].includes(currentScreen) || !voiceController.capability().available;
   if (id) selectVoiceTargetById(id);
 }
 
@@ -292,7 +307,8 @@ function stopContextVoice() {
   voiceController.stop();
   voiceListening = false;
   elements.contextMicButton.disabled = !voiceController.capability().available;
-  setVoiceStatus("Голосовой ввод остановлен.", false);
+  // Stopped by hand: the panel simply goes away, there is nothing left to press.
+  setVoiceStatus("");
 }
 
 function installVoiceInputs() {
@@ -422,10 +438,9 @@ function initializeUi() {
   elements.themeToggle.addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
   elements.darkThemeSetting.addEventListener("change", () => applyTheme(elements.darkThemeSetting.checked ? "dark" : "light"));
   elements.showThemeControl.addEventListener("change", () => setThemeControlVisible(elements.showThemeControl.checked));
-  elements.settingsNavButton.addEventListener("click", () => elements.settingsDialog.showModal());
-  elements.settingsClose.addEventListener("click", () => elements.settingsDialog.close());
-  elements.helpNavButton.addEventListener("click", () => elements.helpDialog.showModal());
-  elements.helpClose.addEventListener("click", () => elements.helpDialog.close());
+  // Settings and help are full tabs like "Объекты", not pop-up panels (Bolat, 05.10.2026).
+  elements.settingsNavButton.addEventListener("click", () => showScreen("settings"));
+  elements.helpNavButton.addEventListener("click", () => showScreen("help"));
   elements.contextMicButton.addEventListener("click", startContextVoice);
   elements.voiceStopButton.addEventListener("click", stopContextVoice);
   elements.undoButton.addEventListener("click", () => moveHistory(-1).catch(showError));
@@ -586,7 +601,7 @@ function showScreen(name) {
   const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar, .address-field, [data-mic-host]");
   (microphoneHost ?? document.querySelector(".shell")).append(elements.contextMicButton);
   elements.contextMicButton.classList.toggle("docked", Boolean(microphoneHost));
-  for (const screen of ["start", "room", "openings", "interior", "adjacent", "shape", "done"]) {
+  for (const screen of ["start", "room", "openings", "interior", "adjacent", "shape", "done", "settings", "help"]) {
     elements[screen + "Screen"].hidden = screen !== name;
   }
   syncCanvasSizes();
@@ -603,10 +618,9 @@ function showScreen(name) {
   } catch (error) {
     showError(error);
   }
-  const objectMode = name === "start" && startMode === "list";
+  const tab = name === "start" && startMode === "list" ? "objects" : name === "settings" || name === "help" ? name : "measure";
   startMode = "new";
-  elements.measureNavButton.classList.toggle("active", !objectMode);
-  elements.objectsNavButton.classList.toggle("active", objectMode);
+  for (const key of ["measure", "objects", "settings", "help"]) elements[key + "NavButton"].classList.toggle("active", tab === key);
   refreshVoiceTarget();
 }
 function draftValue() {
@@ -702,7 +716,8 @@ function restoreForm(draft) {
   shapeState = restoreShapeState(draft?.shape, newShapeState());
   pendingShape = restoreShapeState(draft?.pendingShape, null);
   entrance = restoreEntrance(draft?.entrance);
-  activeRoomWall = entrance.step === "thickness" ? null : entrance.step === "anchor" ? (entrance.wall + 1) % 4 : entrance.wall;
+  activeRoomWall = entrance.step === "thickness" ? null
+    : entrance.step === "anchor" ? (entrance.side ? entranceNeighbour(entrance.side) : null) : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
   setKind(openingKind, false, false);
   setInteriorKind(interiorKind, false);
@@ -738,10 +753,11 @@ function previewRoom() {
     const wall = entrance.wall;
     const length = room.walls[wall].length_m;
     const known = wall % 2 === 0 ? widthKnown : heightKnown;
-    // Until the wall is measured the door is only drawn in the middle; once both are known it sits at its real place.
-    const offset = known && entrance.anchor !== null
-      ? Math.max(0, length - entrance.anchor - ENTRANCE_WIDTH_M)
-      : Math.max(0, (length - ENTRANCE_WIDTH_M) / 2);
+    // Measured from the start corner the door sits at once; from the end corner only when the wall length is known.
+    const real = entrance.side === "start" || known ? entranceOffset(length) : null;
+    const offset = real === null
+      ? Math.max(0, (length - ENTRANCE_WIDTH_M) / 2)
+      : Math.min(Math.max(0, real), Math.max(0, length - ENTRANCE_WIDTH_M));
     room.openings = [{ id: "entrance", wall_id: "preview-" + (wall + 1), offset_m: offset, width_m: ENTRANCE_WIDTH_M, kind: "door" }];
   }
   return room;
@@ -1170,16 +1186,30 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
 }
 const ROOM_TIPS = {
   wall: "Нажмите на мигающую стену: здесь входная дверь",
-  anchor: "Нажмите на мигающую стену и назовите расстояние от двери до неё",
-  thickness: "Назовите толщину стены",
+  anchor: "Нажмите на стену слева или справа от двери и назовите расстояние от неё до двери",
+  thickness: "Нажмите «Толщина ?» и назовите толщину стены",
   measure: "Нажмите на мигающую стену и назовите её размер",
 };
 function renderRoomInput() {
-  elements.roomTip.textContent = ROOM_TIPS[entrance.step];
+  elements.roomTip.textContent = entrance.step === "anchor" && entrance.side
+    ? "Назовите расстояние от мигающей стены до двери" : ROOM_TIPS[entrance.step];
+  if (entrance.step === "thickness") {
+    clearTimeout(thicknessChipTimer);
+    elements.thicknessChip.textContent = "Толщина ?";
+    elements.thicknessChip.classList.remove("done");
+    elements.thicknessChip.hidden = false;
+  } else if (!elements.thicknessChip.classList.contains("done")) {
+    elements.thicknessChip.hidden = true;
+  }
   cancelAnimationFrame(roomPulseFrame);
+  // Until a side is chosen, the walls left and right of the door blink in turn: either can anchor it.
+  const choosingSide = entrance.step === "anchor" && !entrance.side;
   const draw = () => {
-    drawRoom(elements.roomCanvas, previewRoom(), activeRoomWall, true);
-    if (currentScreen === "room" && activeRoomWall !== null) roomPulseFrame = requestAnimationFrame(draw);
+    const wall = choosingSide
+      ? entranceNeighbour(Math.floor(Date.now() / 650) % 2 ? "end" : "start")
+      : activeRoomWall;
+    drawRoom(elements.roomCanvas, previewRoom(), wall, true);
+    if (currentScreen === "room" && wall !== null) roomPulseFrame = requestAnimationFrame(draw);
   };
   draw();
 }
@@ -2373,21 +2403,54 @@ elements.doorAnchor.addEventListener("change", () => {
   if (currentScreen !== "room" || entrance.step !== "anchor") return;
   const value = decimal(elements.doorAnchor.value);
   if (!Number.isFinite(value) || value < 0 || !String(elements.doorAnchor.value).trim()) return;
+  // Dictated through the plain microphone button without picking a wall: count from the start-corner wall.
+  entrance.side ??= "start";
   entrance.anchor = value;
+  if (entrance.thickness) {
+    // A distance asked again after a misfit: thickness is known, the walls may be too.
+    entrance.step = "measure";
+    activeRoomWall = entrance.wall;
+    renderRoomInput();
+    refreshVoiceTarget();
+    if (decimal(elements.firstLength.value) > 0 && decimal(elements.secondLength.value) > 0) saveRoomFromForm();
+    schedulePersist();
+    return;
+  }
+  // Next comes the red "Толщина ?": the technician taps it and names the thickness.
   entrance.step = "thickness";
   activeRoomWall = null;
   renderRoomInput();
   selectVoiceTargetById("wallThickness");
-  // The thickness question follows at once; the microphone needs a moment to close after the previous answer.
-  setTimeout(startContextVoice, 700);
   schedulePersist();
 });
+function hideThicknessChip() {
+  clearTimeout(thicknessChipTimer);
+  elements.thicknessChip.hidden = true;
+}
+elements.thicknessChip.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (entrance.step !== "thickness") {
+    hideThicknessChip();
+    return;
+  }
+  selectVoiceTargetById("wallThickness");
+  startContextVoice();
+});
+// Any tap removes the green "Толщина 0,40 м" before its time.
+document.addEventListener("pointerdown", (event) => {
+  if (entrance.step !== "thickness" && !elements.thicknessChip.hidden && event.target !== elements.thicknessChip) hideThicknessChip();
+}, true);
 elements.wallThickness.addEventListener("change", () => {
   if (currentScreen !== "room" || entrance.step !== "thickness" || !(decimal(elements.wallThickness.value) > 0)) return;
   entrance.thickness = elements.wallThickness.value;
   entrance.step = "measure";
   activeRoomWall = entrance.wall;
   renderRoomInput();
+  elements.thicknessChip.textContent = `Толщина ${formatLength(decimal(entrance.thickness))} м`;
+  elements.thicknessChip.classList.add("done");
+  elements.thicknessChip.hidden = false;
+  clearTimeout(thicknessChipTimer);
+  thicknessChipTimer = setTimeout(hideThicknessChip, 4000);
   refreshVoiceTarget();
   schedulePersist();
 });
@@ -2502,6 +2565,13 @@ function confirmFirstRoomReplacement() {
     confirm("Изменение первой комнаты удалит её проёмы и все связанные комнаты. Продолжить?");
 }
 async function saveFirstRoom(room) {
+  const withDoor = entrance.step === "measure" && entrance.anchor !== null;
+  const length = withDoor ? room.walls[entrance.wall].length_m : 0;
+  const offset = withDoor ? Math.round(entranceOffset(length) * 1000) / 1000 : 0;
+  // Checked before the room is stored: a failed door must not leave a doorless room behind.
+  if (withDoor && (offset < 0 || offset + ENTRANCE_WIDTH_M > length + 1e-9)) {
+    throw new Error("Дверь не помещается: расстояние от неё до стены больше самой стены.");
+  }
   packageData.rooms = [room];
   packageData.connections = [];
   // The address belongs to the object since "Начать"; only "Сохранить адрес" changes it, never an unsaved field.
@@ -2510,9 +2580,7 @@ async function saveFirstRoom(room) {
   pendingAdjacent = null;
   pendingShape = null;
   validatePackage(packageData);
-  if (entrance.step === "measure" && entrance.anchor !== null) {
-    const offset = Math.round((room.walls[entrance.wall].length_m - entrance.anchor - ENTRANCE_WIDTH_M) * 1000) / 1000;
-    if (offset < 0) throw new Error("Дверь не помещается: расстояние от неё до стены больше самой стены.");
+  if (withDoor) {
     packageData = addOpeningToPackage(packageData, 0, {
       kind: "door",
       wallIndex: entrance.wall,
@@ -2540,7 +2608,7 @@ async function saveRoomFromForm() {
       // The measured door position did not fit: ask for the distance again.
       entrance.step = "anchor";
       entrance.anchor = null;
-      activeRoomWall = (entrance.wall + 1) % 4;
+      activeRoomWall = entrance.side ? entranceNeighbour(entrance.side) : null;
       renderRoomInput();
     }
   }
@@ -2760,8 +2828,10 @@ elements.roomCanvas.addEventListener("click", (event) => {
       activeRoomWall = wallIndex;
       entrance.wall = wallIndex;
     } else {
+      // The door appears in the middle; the walls on both sides of it now blink in turn.
       entrance.step = "anchor";
-      activeRoomWall = (wallIndex + 1) % 4;
+      entrance.side = null;
+      activeRoomWall = null;
     }
     renderRoomInput();
     refreshVoiceTarget();
@@ -2769,11 +2839,16 @@ elements.roomCanvas.addEventListener("click", (event) => {
     return;
   }
   if (entrance.step === "anchor") {
+    const side = wallIndex === entranceNeighbour("start") ? "start" : wallIndex === entranceNeighbour("end") ? "end" : null;
     if (wallIndex === entrance.wall) {
       entrance.step = "wall";
+      entrance.side = null;
       entrance.anchor = null;
       activeRoomWall = wallIndex;
-    } else if (wallIndex === activeRoomWall) {
+    } else if (side) {
+      // The technician picks the side: the distance is measured from this wall to the near edge of the door.
+      entrance.side = side;
+      activeRoomWall = wallIndex;
       selectVoiceTargetById("doorAnchor");
       startContextVoice();
     }

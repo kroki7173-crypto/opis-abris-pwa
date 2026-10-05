@@ -86,6 +86,7 @@
       <figure class="preview plan-stage" data-mic-host>
         <canvas id="roomCanvas" width="720" height="560"
                 aria-label="План комнаты. Нажмите на стену для голосового ввода или на число для ручного ввода"></canvas>
+        <button id="thicknessChip" class="thickness-chip" type="button" hidden>Толщина ?</button>
         <figcaption id="roomTip" class="plan-tip">Коснитесь стены и назовите размер</figcaption>
       </figure>
 
@@ -277,21 +278,17 @@
     </section>
     <button id="contextMicButton" class="context-mic" type="button" aria-label="Включить микрофон" title="Включить микрофон">🎙</button>
 
-    <dialog id="settingsDialog">
-      <div class="dialog-body">
-        <div class="dialog-head"><h2>Настройки</h2><button id="settingsClose" class="dialog-close quiet" type="button" aria-label="Закрыть">×</button></div>
-        <div class="setting-row"><span>Тёмная тема</span><input id="darkThemeSetting" type="checkbox" aria-label="Тёмная тема"></div>
-        <div class="setting-row"><span>Показывать кнопку темы вверху</span><input id="showThemeControl" type="checkbox"></div>
-      </div>
-    </dialog>
+    <section id="settingsScreen" class="card screen" hidden>
+      <h2>Настройки</h2>
+      <div class="setting-row"><span>Тёмная тема</span><input id="darkThemeSetting" type="checkbox" aria-label="Тёмная тема"></div>
+      <div class="setting-row"><span>Показывать кнопку темы вверху</span><input id="showThemeControl" type="checkbox"></div>
+    </section>
 
-    <dialog id="helpDialog">
-      <div class="dialog-body">
-        <div class="dialog-head"><h2>Помощь</h2><button id="helpClose" class="dialog-close quiet" type="button" aria-label="Закрыть">×</button></div>
-        <p class="lead">Нажмите на нужное поле или стену, затем включите микрофон. Нажатие на число оставляет ручной ввод доступным.</p>
-        <p class="hint">Все действия автоматически сохраняются на этом устройстве.</p>
-      </div>
-    </dialog>
+    <section id="helpScreen" class="card screen" hidden>
+      <h2>Помощь</h2>
+      <p class="lead">Нажмите на нужное поле или стену, затем включите микрофон. Нажатие на число оставляет ручной ввод доступным.</p>
+      <p class="hint">Все действия автоматически сохраняются на этом устройстве.</p>
+    </section>
 
     <nav class="bottom-nav" aria-label="Основная навигация">
       <button id="measureNavButton" class="nav-button active" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18"/><path d="M5 20V8l7-4 7 4v12"/><path d="M10 20v-6h4v6"/></svg><span>Главная</span></button>

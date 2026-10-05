@@ -299,85 +299,111 @@ export function createVoiceController(scope, onStatus = () => {}) {
     return { local: true };
   }
 
+  // One press of "Остановить" ends everything at once: the page does not wait for the browser to report the end.
   function stop() {
-    if (!active) return false;
-    if (activeSession) activeSession.cancelled = true;
-    try { active.abort(); } catch { /* Распознавание уже завершилось. */ }
+    if (!activeSession) return false;
+    activeSession.cancelled = true;
+    activeSession.cancel();
     return true;
   }
 
-  async function listen({ mode, onValue, onListening = () => {}, timeoutMs = 8000, addressLessons = null }) {
+  async function listen({
+    mode, onValue, onListening = () => {}, timeoutMs = 8000, silenceMs = 1200, addressLessons = null,
+  }) {
     stop();
     const { local } = await prepare();
     const recognition = new Recognition();
     recognition.lang = "ru-RU";
     recognition.continuous = false;
-    recognition.interimResults = false;
+    // Interim results let the page notice the end of speech itself: iOS keeps the microphone open long after it.
+    recognition.interimResults = true;
     recognition.maxAlternatives = 1;
     if (local) recognition.processLocally = true;
-    const session = { cancelled: false, timer: null };
+    const session = { cancelled: false, timer: null, silence: null, heard: "", cancel: () => {} };
     active = recognition;
     activeSession = session;
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = () => {
+      let closed = false;
+      const close = () => {
+        if (closed) return;
+        closed = true;
         clearTimeout(session.timer);
+        clearTimeout(session.silence);
         if (active === recognition) active = null;
         if (activeSession === session) activeSession = null;
+        try { recognition.stop?.(); } catch { /* Already finished. */ }
+        try { recognition.abort?.(); } catch { /* Already finished. */ }
         onListening(false);
+      };
+      session.cancel = () => {
+        const first = !settled;
+        settled = true;
+        close();
+        if (first) resolve(null);
+      };
+      const deliver = (transcript) => {
+        if (settled) return;
+        settled = true;
+        close();
+        try {
+          const value = mode === "measurement" ? spokenMeasurement(transcript)
+            : mode === "address" ? spokenAddress(transcript, addressLessons) : transcript;
+          onValue(value, transcript);
+          onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
+          resolve({ value, transcript });
+        } catch (error) {
+          onStatus(error.message, true);
+          reject(error);
+        }
       };
       recognition.onstart = () => {
         onListening(true);
         onStatus("Говорите. После заполнения обязательно проверьте значение.", false);
         session.timer = setTimeout(() => {
+          if (session.heard) {
+            deliver(session.heard);
+            return;
+          }
           session.cancelled = true;
-          onStatus("Микрофон остановлен: время ожидания истекло.", false);
-          try { recognition.abort(); } catch { /* Распознавание уже завершилось. */ }
+          onStatus("Микрофон выключен: ничего не услышал.", false);
+          session.cancel();
         }, Math.max(1000, Number(timeoutMs) || 8000));
       };
       recognition.onresult = (event) => {
         if (settled) return;
-        try {
-          const transcript = event.results[event.resultIndex][0].transcript.trim();
-          const value = mode === "measurement" ? spokenMeasurement(transcript)
-            : mode === "address" ? spokenAddress(transcript, addressLessons) : transcript;
-          onValue(value, transcript);
-          onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
-          settled = true;
-          clearTimeout(session.timer);
-          resolve({ value, transcript });
-        } catch (error) {
-          settled = true;
-          clearTimeout(session.timer);
-          onStatus(error.message, true);
-          reject(error);
+        const results = [...event.results];
+        session.heard = results.map((result) => result[0].transcript).join(" ").replace(/\s+/gu, " ").trim();
+        if (results.at(-1)?.isFinal) {
+          deliver(session.heard);
+          return;
         }
+        // A short pause after the last word ends the dictation.
+        clearTimeout(session.silence);
+        session.silence = setTimeout(() => deliver(session.heard), Math.max(300, Number(silenceMs) || 1200));
       };
       recognition.onerror = (event) => {
         if (settled) return;
         if (event.error === "aborted" && session.cancelled) {
-          settled = true;
-          resolve(null);
+          session.cancel();
           return;
         }
         settled = true;
+        close();
         const error = new Error(recognitionError(event.error));
         onStatus(error.message, true);
         reject(error);
       };
       recognition.onend = () => {
-        finish();
-        if (!settled) {
-          settled = true;
-          resolve(null);
-        }
+        if (!settled && session.heard) deliver(session.heard);
+        else session.cancel();
       };
       try {
         recognition.start();
       } catch (error) {
         settled = true;
-        finish();
+        close();
         onStatus("Не удалось включить микрофон. Введите значение вручную.", true);
         reject(error);
       }
