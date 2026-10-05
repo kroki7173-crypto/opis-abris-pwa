@@ -42,7 +42,7 @@ import { createVoiceController } from "./voice.js";
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
-  "shapeButton", "shapeBackButton", "shapeFewerButton", "shapeMoreButton", "shapeCount", "shapeCanvas",
+  "shapeBackButton", "shapeFewerButton", "shapeMoreButton", "shapeCount", "shapeCanvas",
   "shapeCaption", "shapeFields", "shapeStatus", "shapeDoneButton", "shapeResetButton", "shapeMirrorButton",
   "adjacentShapeButton", "adjacentShapeNote",
   "address", "roomName", "firstLength", "secondLength", "wallThickness", "startButton",
@@ -123,6 +123,8 @@ let openingOffsetTouched = false;
 let planView = { zoom: 1, x: 0, y: 0 };
 // "Объекты" is highlighted only when the technician asked for the list; the start screen reached otherwise is "Замер".
 let objectsNavRequested = false;
+// Tapping the wall opposite an already measured one and giving another size means the room is not a rectangle.
+let roomOppositeTap = null;
 let celebratedRevision = null;
 
 function showError(error) {
@@ -136,6 +138,12 @@ window.addEventListener("unhandledrejection", (event) => showError("Ошибка
 function clearError() {
   elements.errorMessage.hidden = true;
   elements.errorMessage.textContent = "";
+}
+const SAVE_FAILED = "Не удалось сохранить черновик — не закрывайте страницу";
+// Routine "saved on this device" notes are noise; only a failed save is worth the technician's attention.
+function setSaveStatus(text) {
+  elements.saveStatus.textContent = text;
+  elements.saveStatus.hidden = text !== SAVE_FAILED;
 }
 function setVoiceStatus(message, isError = false) {
   clearTimeout(voicePanelTimer);
@@ -190,12 +198,12 @@ function defaultVoiceTargetForScreen() {
 
 function refreshVoiceTarget() {
   if (currentScreen === "shape") {
-    elements.contextMicButton.hidden = false;
+    elements.contextMicButton.hidden = !voiceController.capability().available;
     selectShapeVoiceTarget();
     return;
   }
   const id = defaultVoiceTargetForScreen();
-  elements.contextMicButton.hidden = currentScreen === "done";
+  elements.contextMicButton.hidden = currentScreen === "done" || !voiceController.capability().available;
   if (id) selectVoiceTargetById(id);
 }
 
@@ -203,7 +211,7 @@ async function startContextVoice() {
   if (!activeVoiceTarget || voiceListening) return;
   const capability = voiceController.capability();
   if (!capability.available) {
-    setVoiceStatus(capability.reason + " Введите значение вручную.", true);
+    // No on-device speech here (e.g. iPhone): no alarming panel, just the keyboard on the field.
     activeVoiceTarget.input.focus();
     return;
   }
@@ -539,15 +547,13 @@ async function persist() {
     await saveDraft(value);
     if (value.package?.rooms?.length) await saveSurvey(value);
     if (!historyRestoring) recordHistory(value);
-    elements.saveStatus.textContent = value.package?.rooms?.length
-      ? "Черновик и объект сохранены на этом устройстве"
-      : "Черновик сохранён на этом устройстве";
+    setSaveStatus("");
   } catch {
-    elements.saveStatus.textContent = "Не удалось сохранить черновик — не закрывайте страницу";
+    setSaveStatus(SAVE_FAILED);
   }
 }
 function schedulePersist() {
-  elements.saveStatus.textContent = "Сохраняем…";
+  setSaveStatus("Сохраняем…");
   clearTimeout(saveTimer);
   saveTimer = setTimeout(persist, 180);
 }
@@ -2034,7 +2040,7 @@ async function openSurveyRecord(record) {
   elements.address.value = packageData.address;
   fillRoomForm(packageData.rooms[0]);
   showScreen("done");
-  elements.saveStatus.textContent = "Открыт сохранённый объект";
+  setSaveStatus("Открыт сохранённый объект");
 }
 
 async function renderSurveyCatalog() {
@@ -2078,7 +2084,7 @@ async function renderSurveyCatalog() {
           restoreForm(null);
         }
         await renderSurveyCatalog();
-        elements.saveStatus.textContent = "Сохранённый объект удалён";
+        setSaveStatus("Сохранённый объект удалён");
       } catch (error) {
         showError(error);
       }
@@ -2102,7 +2108,7 @@ async function deliverFile(blob, name, title, text, successMessage) {
   if (file && navigator.share && navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ title, text, files: [file] });
-      elements.saveStatus.textContent = successMessage;
+      setSaveStatus(successMessage);
       return;
     } catch (error) {
       if (error?.name === "AbortError") throw error;
@@ -2115,7 +2121,7 @@ async function deliverFile(blob, name, title, text, successMessage) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-  elements.saveStatus.textContent = successMessage;
+  setSaveStatus(successMessage);
 }
 
 async function shareTodaySurveys() {
@@ -2161,7 +2167,7 @@ async function leaveCurrentForCatalog(message) {
   pendingAdjacent = null;
   restoreForm(null);
   showScreen("start");
-  elements.saveStatus.textContent = message;
+  setSaveStatus(message);
 }
 
 elements.address.addEventListener("input", () => {
@@ -2169,6 +2175,25 @@ elements.address.addEventListener("input", () => {
   elements.startButton.disabled = !elements.address.value.trim();
   schedulePersist();
 });
+for (const input of [elements.firstLength, elements.secondLength]) {
+  input.addEventListener("change", () => {
+    const tap = roomOppositeTap;
+    if (!tap || elements[tap.field] !== input || currentScreen !== "room") return;
+    roomOppositeTap = null;
+    const given = decimal(input.value);
+    if (!(given > 0) || Math.abs(given - decimal(tap.baseline)) < 0.005) return;
+    // The opposite wall differs: hand over to the free-form room screen, keeping what was measured.
+    const text = (value) => String(value).replace(".", ",");
+    const first = text(decimal(elements.firstLength.value));
+    const second = text(decimal(elements.secondLength.value));
+    const walls = [first, second, first, second];
+    walls[tap.wallIndex] = text(given);
+    input.value = tap.baseline;
+    openShape("first");
+    shapeState = { ...shapeState, count: 4, walls, angles: ["", "90", "90", "90"], active: null };
+    showScreen("shape");
+  });
+}
 for (const input of [elements.roomName, elements.firstLength, elements.secondLength, elements.wallThickness]) {
   input.addEventListener("input", () => {
     if (input === elements.wallThickness) {
@@ -2380,7 +2405,6 @@ elements.createAdjacentButton.addEventListener("click", async () => {
     showError(error);
   }
 });
-elements.shapeButton.addEventListener("click", () => openShape("first"));
 elements.adjacentShapeButton.addEventListener("click", () => openShape("adjacent"));
 elements.shapeBackButton.addEventListener("click", () => {
   if (shapeState.context === "adjacent") showScreen("adjacent");
@@ -2499,8 +2523,12 @@ elements.roomCanvas.addEventListener("click", (event) => {
   ];
   const wallIndex = distances.indexOf(Math.min(...distances));
   activeRoomWall = wallIndex;
+  const tappedField = wallIndex % 2 === 0 ? "firstLength" : "secondLength";
+  roomOppositeTap = wallIndex >= 2 && decimal(elements[tappedField].value) > 0
+    ? { wallIndex, field: tappedField, baseline: elements[tappedField].value }
+    : null;
   renderRoomInput();
-  selectVoiceTargetById(wallIndex % 2 === 0 ? "firstLength" : "secondLength");
+  selectVoiceTargetById(tappedField);
   startContextVoice();
 });
 elements.adjacentCanvas.addEventListener("click", (event) => {
@@ -2618,7 +2646,7 @@ async function start() {
   recordHistory();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {
-      elements.saveStatus.textContent = "Офлайн-режим станет доступен после установки приложения";
+      setSaveStatus("Офлайн-режим станет доступен после установки приложения");
     });
   }
 }
