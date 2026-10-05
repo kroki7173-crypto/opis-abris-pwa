@@ -1215,6 +1215,10 @@ export function validatePackage(pkg) {
   }
   requiredText(pkg.package_id, "Номер пакета", 80);
   requiredText(pkg.address, "Адрес", 1000);
+  if (pkg.ceiling_height_m !== undefined) {
+    const height = positiveNumber(pkg.ceiling_height_m, "Высота потолка");
+    if (height < 1.5 || height > 10) throw new Error("Высота потолка: от 1,5 до 10 м.");
+  }
   if (!Array.isArray(pkg.rooms) || pkg.rooms.length < 1 || pkg.rooms.length > 100) {
     throw new Error("Добавьте хотя бы одну комнату.");
   }
@@ -1616,7 +1620,24 @@ export function planProblems(pkg) {
       fixes: sizeFixes(pkg, pair),
     });
   }
+  // The plan carries the ceiling height once, in the largest room (Bolat, 06.10.2026, as on the official plan):
+  // it is asked here, at the end, not in the middle of the survey.
+  if (!(pkg.ceiling_height_m > 0) && pkg.rooms.length) {
+    const largest = pkg.rooms.reduce((best, room, index) =>
+      Math.abs(signedArea(roomPolygon(room))) > Math.abs(signedArea(roomPolygon(pkg.rooms[best]))) ? index : best, 0);
+    problems.push({ kind: "no_height", roomIndex: largest, point: centre(largest), fixes: [{ type: "height", roomIndex: largest, value: null }] });
+  }
   return problems;
+}
+
+export function setCeilingHeight(pkg, heightM) {
+  const height = positiveNumber(heightM, "Высота потолка");
+  if (height < 1.5 || height > 10) throw new Error("Высота потолка: от 1,5 до 10 м. Назовите ещё раз.");
+  const next = structuredClone(pkg);
+  next.ceiling_height_m = height;
+  next.updated_at = new Date().toISOString();
+  validatePackage(next);
+  return next;
 }
 
 export function fileNameFor(pkg) {

@@ -20,6 +20,7 @@ import {
   removeOpeningFromPackage,
   removeRoomFromPackage,
   roomsBehind,
+  setCeilingHeight,
   roomPoints,
   setOpeningWallThickness,
   setWallLength,
@@ -73,7 +74,7 @@ const ids = [
   "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "hintCard", "hintText",
   "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
-  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "removeRoomButton",
+  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "removeRoomButton", "summaryHeight",
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 const kindButtons = [...document.querySelectorAll("[data-kind]")];
@@ -2784,9 +2785,8 @@ function problemIssue(pkg, problem) {
   const key = [problem.kind, id(problem.roomIndex), id(problem.otherRoomIndex ?? problem.fromRoomIndex), problem.openingId ?? ""].join(":");
   const fixes = (problem.fixes ?? []).map((fix) => ({
     ...fix,
-    label: fix.type === "wall"
-      ? `${name(fix.roomIndex)} ${formatLength(fix.value)} м`
-      : "толщина ?",
+    label: fix.type === "wall" ? `${name(fix.roomIndex)} ${formatLength(fix.value)} м`
+      : fix.type === "height" ? "высота ?" : "толщина ?",
   }));
   const text = (() => {
     switch (problem.kind) {
@@ -2802,6 +2802,8 @@ function problemIssue(pkg, problem) {
         return `${name(problem.roomIndex)}: из ${name(problem.fromRoomIndex)} сюда ведёт дверь, а здесь её нет. Поставьте её на этой стене.`;
       case "rooms_overlap":
         return `${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} налезают друг на друга. Нажмите неверный размер и назовите его заново.`;
+      case "no_height":
+        return "Не названа высота потолка — она пишется на плане. Нажмите и назовите её.";
       case "thin_wall":
         return `Стена между ${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} получается ${Math.max(0, Math.round(problem.gap_m * 100))} см — так не бывает. Нажмите неверный размер и назовите его заново.`;
       default:
@@ -2810,7 +2812,7 @@ function problemIssue(pkg, problem) {
   })();
   const action = problem.kind === "door_leads_nowhere"
     ? { type: "door", roomIndex: problem.roomIndex, openingId: problem.openingId }
-    : problem.kind === "no_thickness" ? null : room;
+    : ["no_thickness", "no_height"].includes(problem.kind) ? null : room;
   return { key, text, action, fixes };
 }
 function validationIssues(pkg) {
@@ -2850,8 +2852,8 @@ async function applyFix(fix, raw) {
   const value = decimal(raw);
   if (!(value > 0)) return;
   try {
-    packageData = fix.type === "wall"
-      ? setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value))
+    packageData = fix.type === "wall" ? setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value))
+      : fix.type === "height" ? setCeilingHeight(packageData, String(value))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
   } catch (error) {
@@ -2872,10 +2874,13 @@ function fixButton(fix) {
     input.inputMode = "decimal";
     input.autocomplete = "off";
     input.value = fix.value ? formatLength(fix.value) : "";
-    input.setAttribute("aria-label", fix.type === "wall" ? "Новая длина стены, м" : "Толщина стены");
+    const what = { wall: ["Новая длина стены, м", "measurement", "новую длину стены"],
+      height: ["Высота потолка, м", "measurement", "высоту потолка"],
+      thickness: ["Толщина стены", "thickness", "толщину стены"] }[fix.type];
+    input.setAttribute("aria-label", what[0]);
     input.addEventListener("change", () => applyFix(fix, input.value));
     button.replaceWith(input);
-    selectVoiceTarget(input, fix.type === "wall" ? "measurement" : "thickness", fix.type === "wall" ? "новую длину стены" : "толщину стены");
+    selectVoiceTarget(input, what[1], what[2]);
     if (voiceController.capability().available) startContextVoice();
     else input.focus();
   });
@@ -2942,6 +2947,14 @@ function renderSummary() {
       }
     }
     elements.validationList.append(item);
+  }
+  // A named ceiling height is shown under the plan and said again by a tap.
+  elements.summaryHeight.replaceChildren();
+  elements.summaryHeight.hidden = !(packageData.ceiling_height_m > 0);
+  if (packageData.ceiling_height_m > 0) {
+    elements.summaryHeight.append("Высота потолка ", fixButton({
+      type: "height", value: packageData.ceiling_height_m, label: `${formatLength(packageData.ceiling_height_m)} м`,
+    }));
   }
   elements.shareButton.disabled = issues.length > 0;
   if (finished && celebratedRevision !== packageData.updated_at) {
@@ -3606,6 +3619,8 @@ elements.addInteriorButton.addEventListener("click", async () => {
   }
 });
 elements.finishButton.addEventListener("click", async () => {
+  // Nothing measured (or the draft not loaded yet): never store an empty survey over the real one.
+  if (!packageData?.rooms?.length) return;
   try {
     clearOpeningEdit();
     // The app itself decides whether it understands the whole plan (Bolat, 05.10.2026): no question to the
