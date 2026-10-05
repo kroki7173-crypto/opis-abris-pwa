@@ -18,6 +18,8 @@ import {
   planProblems,
   removeInteriorFromPackage,
   removeOpeningFromPackage,
+  removeRoomFromPackage,
+  roomsBehind,
   roomPoints,
   setOpeningWallThickness,
   setWallLength,
@@ -71,7 +73,7 @@ const ids = [
   "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "hintCard", "hintText",
   "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
-  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput",
+  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "removeRoomButton",
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 const kindButtons = [...document.querySelectorAll("[data-kind]")];
@@ -2099,6 +2101,9 @@ function renderOpenings() {
   kindButtons[0]?.parentElement?.classList.toggle("ask", openingStep?.step === "kind");
   syncHint();
 
+  // Any room but the first can be removed with the rooms measured through it (the first one is "Новый замер").
+  elements.removeRoomButton.hidden = currentRoomIndex === 0;
+  elements.removeRoomButton.textContent = `Удалить комнату «${room.name}»`;
   elements.openingList.replaceChildren();
   for (const opening of room.openings) {
     const connection = connectionForOpening(packageData, currentRoomIndex, opening.id);
@@ -2949,6 +2954,27 @@ function startWallFix(wallIndex) {
   if (voiceController.capability().available) startContextVoice();
   else elements.wallFixInput.focus();
 }
+elements.removeRoomButton.addEventListener("click", async () => {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room || currentRoomIndex === 0) return;
+  const behind = roomsBehind(packageData, currentRoomIndex).map((index) => `«${packageData.rooms[index].name}»`);
+  const more = behind.length ? `
+
+Вместе с ней уйдут комнаты, обмеренные через неё: ${behind.join(", ")}.` : "";
+  if (!confirm(`Удалить «${room.name}»?${more}
+
+Дверь в неё останется. Отменить можно кнопкой «назад» вверху.`)) return;
+  try {
+    const parentId = packageData.connections.find((item) => item.room_b_id === room.id)?.room_a_id;
+    packageData = removeRoomFromPackage(packageData, currentRoomIndex);
+    currentRoomIndex = Math.max(0, packageData.rooms.findIndex((item) => item.id === parentId));
+    clearOpeningEdit();
+    showScreen("openings");
+    await persist();
+  } catch (error) {
+    showError(error);
+  }
+});
 elements.issuesReturnButton.addEventListener("click", () => {
   clearOpeningEdit();
   pendingAdjacent = null;

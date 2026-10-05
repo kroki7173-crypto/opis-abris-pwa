@@ -1152,6 +1152,36 @@ export function createAdjacentRoom(pkg, {
   return next;
 }
 
+// The rooms measured through this one, and further through them: they hang on its doors.
+export function roomsBehind(pkg, roomIndex) {
+  const start = pkg.rooms[roomIndex]?.id;
+  const ids = new Set(start ? [start] : []);
+  for (let added = true; added;) {
+    added = false;
+    for (const connection of pkg.connections ?? []) {
+      if (ids.has(connection.room_a_id) && !ids.has(connection.room_b_id)) {
+        ids.add(connection.room_b_id);
+        added = true;
+      }
+    }
+  }
+  ids.delete(start);
+  return pkg.rooms.flatMap((room, index) => ids.has(room.id) ? [index] : []);
+}
+// A wrongly measured room goes away with every room measured through it (Bolat, 06.10.2026: any edit must be
+// possible). The door it was entered by stays: it is a real door, and the final check names it until a room is
+// measured behind it again or the door itself is removed. The first room is the survey itself: "Новый замер".
+export function removeRoomFromPackage(pkg, roomIndex) {
+  if (roomIndex <= 0 || !pkg.rooms[roomIndex]) throw new Error("Первую комнату не удаляют: для этого есть «Новый замер».");
+  const gone = new Set([roomIndex, ...roomsBehind(pkg, roomIndex)].map((index) => pkg.rooms[index].id));
+  const next = structuredClone(pkg);
+  next.rooms = next.rooms.filter((room) => !gone.has(room.id));
+  next.connections = next.connections.filter((connection) => !gone.has(connection.room_a_id) && !gone.has(connection.room_b_id));
+  next.updated_at = new Date().toISOString();
+  validatePackage(next);
+  return next;
+}
+
 export function withRoom(pkg, room) {
   const next = structuredClone(pkg);
   next.rooms.push(room);
