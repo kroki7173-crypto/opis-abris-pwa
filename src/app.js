@@ -523,7 +523,8 @@ function initializeUi() {
     elements.openingWidth.select();
   });
   elements.openingThicknessPrompt.addEventListener("click", () => {
-    selectVoiceTargetById("wallThickness");
+    // The same pulsing button asks the width of a new window or passage, then the wall thickness.
+    selectVoiceTargetById(openingStep?.step === "width" ? "openingWidth" : "wallThickness");
     startContextVoice();
   });
   elements.adjacentAnchorCornerButton.addEventListener("click", () => {
@@ -1338,6 +1339,7 @@ function hintText() {
       return `Нажмите на мигающий кусок стены слева или справа от ${of} и назовите расстояние от угла до ${of}.`;
     }
     if (openingStep?.step === "side") return `Назовите расстояние от угла до ${of}.`;
+    if (openingStep?.step === "width") return `Нажмите «Ширина ${of} ?» и назовите ширину ${of}.`;
     if (openingStep?.step === "thickness") {
       return `Нажмите «Толщина стены у ${of} ?» и назовите толщину. Потом откроется комната за ${placing.kind === "door" ? "дверью" : "проёмом"}.`;
     }
@@ -1906,22 +1908,46 @@ function finishOpeningPlacement(id) {
     packageData = setOpeningWallThickness(packageData, currentRoomIndex, id, String(outerWallThickness(room)));
   }
   const placed = packageData.rooms[currentRoomIndex].openings.find((item) => item.id === id);
-  openingStep = placed.wall_thickness_m > 0 ? null : { step: "thickness", id };
+  const editing = Boolean(openingStep?.editing);
+  openingStep = placed.wall_thickness_m > 0 ? null : { step: "thickness", id, editing };
   renderOpenings();
   persist();
-  if (!openingStep && placed.kind !== "window") afterOpeningThickness(id, true);
+  // Correcting a placed door only moves it; walking through is a tap on the door.
+  if (!openingStep && placed.kind !== "window" && !editing) afterOpeningThickness(id, true);
 }
 // The thickness of a new door or passage is known: the room behind it opens at once, its contour along the whole
 // wall (Bolat, 05.10.2026), without a second tap on the door.
 function afterOpeningThickness(id, placedNow = false) {
   if (!placedNow && (openingStep?.step !== "thickness" || openingStep.id !== id)) return;
+  const editing = Boolean(openingStep?.editing);
   openingStep = null;
   const opening = packageData?.rooms?.[currentRoomIndex]?.openings?.find((item) => item.id === id);
-  if (!opening || opening.kind === "window" || connectionForOpening(packageData, currentRoomIndex, id)) {
+  if (!opening || editing || opening.kind === "window" || connectionForOpening(packageData, currentRoomIndex, id)) {
     renderOpenings();
     return;
   }
   persist().then(() => openAdjacent(currentRoomIndex, id));
+}
+// The room on the other side of a door, or -1 while nothing is measured behind it.
+function connectedRoomIndex(roomIndex, openingId) {
+  const connection = connectionForOpening(packageData, roomIndex, openingId);
+  if (!connection) return -1;
+  const roomId = packageData.rooms[roomIndex].id;
+  const otherId = connection.room_a_id === roomId ? connection.room_b_id : connection.room_a_id;
+  return packageData.rooms.findIndex((room) => room.id === otherId);
+}
+// Walking through a door (Bolat, 05.10.2026): into the room behind it if it is measured, otherwise measure it.
+function goThroughOpening(roomIndex, openingId) {
+  const behind = connectedRoomIndex(roomIndex, openingId);
+  openingStep = null;
+  if (behind < 0) {
+    openAdjacent(roomIndex, openingId);
+    return;
+  }
+  clearOpeningEdit();
+  currentRoomIndex = behind;
+  showScreen("openings");
+  persist();
 }
 function latestOpeningWithoutThickness(room) {
   return [...(room?.openings ?? [])].reverse().find((opening) => !(opening.wall_thickness_m > 0)) ?? null;
@@ -2015,9 +2041,12 @@ function renderOpenings() {
   draw();
   renderPresets();
 
-  const missingThickness = openingStep?.step === "thickness" ? guided : latestOpeningWithoutThickness(room);
-  elements.openingThicknessPrompt.hidden = !missingThickness;
-  if (missingThickness) {
+  const missingThickness = openingStep?.step === "thickness" ? guided
+    : openingStep?.step === "width" ? null : latestOpeningWithoutThickness(room);
+  elements.openingThicknessPrompt.hidden = !missingThickness && openingStep?.step !== "width";
+  if (openingStep?.step === "width" && guided) {
+    elements.openingThicknessText.textContent = `Ширина ${OPENING_GENITIVE[guided.kind]} ?`;
+  } else if (missingThickness) {
     elements.openingThicknessText.textContent = `Толщина стены у ${OPENING_GENITIVE[missingThickness.kind]} ?`;
   }
   // The kind buttons show the kind of the opening being placed, and all of them pulse while it is asked.
@@ -2051,18 +2080,28 @@ function renderOpenings() {
       const transition = document.createElement("button");
       transition.type = "button";
       transition.className = "secondary compact";
-      transition.textContent = connection ? "Комната связана" : "Войти";
-      transition.disabled = Boolean(connection);
-      transition.addEventListener("click", () => openAdjacent(currentRoomIndex, opening.id));
+      // A door into a measured room leads there; one into an unmeasured room starts measuring it.
+      const behind = connectedRoomIndex(currentRoomIndex, opening.id);
+      transition.textContent = behind >= 0 ? `В «${packageData.rooms[behind].name}»` : "Войти";
+      transition.addEventListener("click", () => goThroughOpening(currentRoomIndex, opening.id));
       actions.append(transition);
     }
+    row.append(text, actions);
+    elements.openingList.append(row);
+    // A door that joins two rooms is fixed by both of them: no buttons that could only be grey.
+    if (connection || fullConnection) continue;
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "secondary compact";
     edit.textContent = "Изменить";
     edit.disabled = Boolean(connection) || fullConnection;
     edit.title = edit.disabled ? "Связанный проём изменяется вместе с комнатами" : "Изменить проём";
-    edit.addEventListener("click", () => beginOpeningEdit(opening));
+    // "Изменить" walks the same steps as a new opening: the piece of wall, the distance, the width.
+    edit.addEventListener("click", () => {
+      clearOpeningEdit(false);
+      openingStep = { step: "side", id: opening.id, side: null, editing: true };
+      renderOpenings();
+    });
     actions.append(edit);
     const remove = document.createElement("button");
     remove.type = "button";
@@ -2080,8 +2119,6 @@ function renderOpenings() {
       }
     });
     actions.append(remove);
-    row.append(text, actions);
-    elements.openingList.append(row);
   }
 }
 const MAX_SHAPE_UI_WALLS = Math.min(12, MAX_SHAPE_WALLS);
@@ -3649,10 +3686,16 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   if (hit) {
     // A placed door leads into the room behind it; a window or passage opens for editing (doors via the list).
     // The entrance leads outside and has no room behind it.
-    if (connectionForOpening(packageData, currentRoomIndex, hit.id) || isEntranceOpening(currentRoomIndex, hit)) return;
+    if (isEntranceOpening(currentRoomIndex, hit)) return;
     openingStep = null;
-    if (hit.kind === "door") openAdjacent(currentRoomIndex, hit.id);
-    else beginOpeningEdit(hit);
+    if (hit.kind === "door" || connectionForOpening(packageData, currentRoomIndex, hit.id)) {
+      goThroughOpening(currentRoomIndex, hit.id);
+    } else {
+      // A window or passage tapped again is placed again by the same steps.
+      clearOpeningEdit(false);
+      openingStep = { step: "side", id: hit.id, side: null, editing: true };
+      renderOpenings();
+    }
     return;
   }
   if (connectionsForWall(packageData, currentRoomIndex, wall.id).some((item) => (item.mode ?? "full_wall") === "full_wall")) {
@@ -3690,6 +3733,40 @@ elements.openingOffset.addEventListener("change", () => {
   }
   clearError();
   openingAnchors[opening.id] = openingStep.side;
+  if (opening.kind !== "door") {
+    // A window or passage has no standard width: it is asked next, keeping the distance just named.
+    openingStep = { step: "width", id: opening.id, side: openingStep.side, distance: value, editing: openingStep.editing };
+    elements.openingWidth.value = "";
+    renderOpenings();
+    persist();
+    return;
+  }
+  finishOpeningPlacement(opening.id);
+});
+elements.openingWidth.addEventListener("change", () => {
+  if (openingStep?.step !== "width") return;
+  const room = packageData.rooms[currentRoomIndex];
+  const opening = stepOpening();
+  if (!opening) return;
+  const width = decimal(elements.openingWidth.value);
+  if (!(width > 0) || !String(elements.openingWidth.value).trim()) return;
+  const wallIndex = openingWallIndex(room, opening);
+  const length = room.walls[wallIndex].length_m;
+  // The distance from the chosen corner stays; from the far corner the opening grows towards it.
+  const offset = openingStep.side === "start" ? openingStep.distance : length - openingStep.distance - width;
+  if (offset < -1e-9 || offset + width > length + 1e-9) {
+    showError(`${typeName(opening.kind)} шириной ${formatLength(width)} м не помещается на стене ${formatLength(length)} м. Назовите ширину ещё раз.`);
+    return;
+  }
+  try {
+    packageData = updateOpeningInPackage(packageData, currentRoomIndex, opening.id, {
+      kind: opening.kind, wallIndex, offsetM: String(Math.round(Math.max(0, offset) * 1000) / 1000), widthM: String(width),
+    });
+  } catch (error) {
+    showError(error);
+    return;
+  }
+  clearError();
   finishOpeningPlacement(opening.id);
 });
 window.addEventListener("beforeinstallprompt", (event) => {
