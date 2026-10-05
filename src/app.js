@@ -128,6 +128,13 @@ let roomPulseFrame = null;
 let openingPulseFrame = null;
 let adjacentPulseFrame = null;
 let openingPlacementActive = false;
+// Doors and windows go the same way as the entrance (Bolat, 05.10.2026): tap the wall -> say what is in it
+// (door, window, passage) -> it appears in the middle -> the wall pieces beside it blink in turn -> tap one and name
+// the distance from the corner -> a door or passage asks the wall thickness and then opens the room behind it.
+// { step: "kind", wallIndex } | { step: "side", id, side } | { step: "thickness", id }
+let openingStep = null;
+const OPENING_DEFAULT_WIDTH = { door: 0.8, window: 1.3, passage: 0.9 };
+const OPENING_GENITIVE = { door: "двери", window: "окна", passage: "проёма" };
 // A new opening is centred on its wall until the technician types or dictates a distance.
 let openingOffsetTouched = false;
 let planView = { zoom: 1, x: 0, y: 0 };
@@ -305,6 +312,11 @@ async function startContextVoice() {
     voiceListening = false;
     elements.contextMicButton.disabled = !voiceController.capability().available;
     elements.voiceStatus.classList.remove("listening");
+    // Whatever ended the listening, a calm panel never stays on the screen.
+    if (!elements.voiceStatus.hidden && !elements.voiceStatus.classList.contains("is-error")) {
+      clearTimeout(voicePanelTimer);
+      voicePanelTimer = setTimeout(() => { elements.voiceStatus.hidden = true; }, 2800);
+    }
   }
 }
 
@@ -616,6 +628,8 @@ window.addEventListener("resize", () => {
 function showScreen(name) {
   currentScreen = name;
   if (WORK_SCREENS.includes(name)) workScreen = name;
+  // Another room or screen of the survey ends a half-placed opening; tabs like "Объекты" keep it.
+  if (WORK_SCREENS.includes(name) && name !== "openings") openingStep = null;
   document.documentElement.dataset.screen = name;
   if (name === "start") {
     elements.startScreen.dataset.mode = startMode;
@@ -1245,7 +1259,17 @@ function hintText() {
   }
   if (currentScreen === "room") return elements.roomTip.textContent;
   if (currentScreen === "openings") {
-    return "Есть ещё двери или окна? Выберите под рисунком, что это — дверь, окно или проём, — и нажмите на стену, где оно есть. Чтобы перейти в следующую комнату, нажмите на её дверь.";
+    const placing = stepOpening();
+    const of = placing ? OPENING_GENITIVE[placing.kind] : "";
+    if (openingStep?.step === "kind") return "Что в этой стене? Нажмите под рисунком: дверь, окно или проём.";
+    if (openingStep?.step === "side" && !openingStep.side) {
+      return `Нажмите на мигающий кусок стены слева или справа от ${of} и назовите расстояние от угла до ${of}.`;
+    }
+    if (openingStep?.step === "side") return `Назовите расстояние от угла до ${of}.`;
+    if (openingStep?.step === "thickness") {
+      return `Нажмите «Толщина стены у ${of} ?» и назовите толщину. Потом откроется комната за ${placing.kind === "door" ? "дверью" : "проёмом"}.`;
+    }
+    return "Есть ещё двери или окна? Нажмите на стену, где они есть. Чтобы перейти в следующую комнату, нажмите на её дверь.";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
     return validationIssues(packageData).length
@@ -1505,6 +1529,101 @@ function renderInteriors() {
   }
 }
 
+// The entrance door of the first room leads outside: there is no room behind it.
+function isEntranceOpening(roomIndex, opening) {
+  return roomIndex === 0 && opening?.kind === "door" && packageData?.rooms?.[0]?.openings?.[0]?.id === opening.id;
+}
+function stepOpening() {
+  if (!openingStep?.id) return null;
+  return packageData?.rooms?.[currentRoomIndex]?.openings?.find((item) => item.id === openingStep.id) ?? null;
+}
+// The piece of wall between a corner and the opening: the opening is anchored by its length.
+function openingPiece(canvas, room, opening, side) {
+  const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
+  const length = room.walls[wallIndex].length_m;
+  const piece = side === "start"
+    ? { offset_m: 0, width_m: opening.offset_m }
+    : { offset_m: opening.offset_m + opening.width_m, width_m: Math.max(0, length - opening.offset_m - opening.width_m) };
+  return canvasWallSegment(canvas, room, wallIndex, piece);
+}
+// Windows are in outer walls: they take the outer wall thickness named at the entrance and ask nothing.
+// (A wall's own thickness_m is only the provisional 0,1 until something in it was measured.)
+function outerWallThickness(room) {
+  const entrance = packageData?.rooms?.[0]?.openings?.[0];
+  return entrance?.wall_thickness_m > 0 ? entrance.wall_thickness_m : room.wall_thickness_m;
+}
+function openingWallIndex(room, opening) {
+  return room.walls.findIndex((wall) => wall.id === opening.wall_id);
+}
+async function chooseOpeningKind(kind) {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room) return;
+  try {
+    if (openingStep?.step === "kind") {
+      const wall = room.walls[openingStep.wallIndex];
+      const width = OPENING_DEFAULT_WIDTH[kind];
+      const offset = Math.max(0, Math.round((wall.length_m - width) / 2 * 100) / 100);
+      packageData = addOpeningToPackage(packageData, currentRoomIndex, {
+        kind, wallIndex: openingStep.wallIndex, offsetM: String(offset), widthM: String(width),
+      });
+      openingStep = { step: "side", id: packageData.rooms[currentRoomIndex].openings.at(-1).id, side: null };
+    } else {
+      const opening = stepOpening();
+      if (!opening) return;
+      // The opening just placed can still change its kind; it keeps its middle on the wall.
+      const wallIndex = openingWallIndex(room, opening);
+      const length = room.walls[wallIndex].length_m;
+      const width = OPENING_DEFAULT_WIDTH[kind];
+      const middle = opening.offset_m + opening.width_m / 2;
+      const offset = Math.min(Math.max(0, middle - width / 2), Math.max(0, length - width));
+      packageData = updateOpeningInPackage(packageData, currentRoomIndex, opening.id, {
+        kind, wallIndex, offsetM: String(Math.round(offset * 1000) / 1000), widthM: String(width),
+      });
+      if (openingStep.step === "thickness" && kind === "window") {
+        finishOpeningPlacement(opening.id);
+        return;
+      }
+    }
+    openingKind = kind;
+    clearError();
+    renderOpenings();
+    await persist();
+  } catch (error) {
+    showError(error);
+  }
+}
+function startOpeningDistance(side) {
+  openingStep = { ...openingStep, side };
+  elements.openingOffset.value = "";
+  renderOpenings();
+  selectVoiceTargetById("openingOffset");
+  startContextVoice();
+}
+// Placed and anchored: a window takes the outer wall thickness; a door or passage asks for it.
+function finishOpeningPlacement(id) {
+  const room = packageData.rooms[currentRoomIndex];
+  const opening = room.openings.find((item) => item.id === id);
+  if (opening.kind === "window" && !(opening.wall_thickness_m > 0)) {
+    packageData = setOpeningWallThickness(packageData, currentRoomIndex, id, String(outerWallThickness(room)));
+  }
+  const placed = packageData.rooms[currentRoomIndex].openings.find((item) => item.id === id);
+  openingStep = placed.wall_thickness_m > 0 ? null : { step: "thickness", id };
+  renderOpenings();
+  persist();
+  if (!openingStep && placed.kind !== "window") afterOpeningThickness(id, true);
+}
+// The thickness of a new door or passage is known: the room behind it opens at once, its contour along the whole
+// wall (Bolat, 05.10.2026), without a second tap on the door.
+function afterOpeningThickness(id, placedNow = false) {
+  if (!placedNow && (openingStep?.step !== "thickness" || openingStep.id !== id)) return;
+  openingStep = null;
+  const opening = packageData?.rooms?.[currentRoomIndex]?.openings?.find((item) => item.id === id);
+  if (!opening || opening.kind === "window" || connectionForOpening(packageData, currentRoomIndex, id)) {
+    renderOpenings();
+    return;
+  }
+  persist().then(() => openAdjacent(currentRoomIndex, id));
+}
 function latestOpeningWithoutThickness(room) {
   return [...(room?.openings ?? [])].reverse().find((opening) => !(opening.wall_thickness_m > 0)) ?? null;
 }
@@ -1556,8 +1675,22 @@ function renderOpenings() {
     ? { ...room, openings: room.openings.filter((item) => item.id !== editingOpeningId) }
     : room;
 
+  if (openingStep?.id && !stepOpening()) openingStep = null;
+  const guided = stepOpening();
   cancelAnimationFrame(openingPulseFrame);
   const draw = () => {
+    if (openingStep?.step === "kind" || guided) {
+      // Guided steps: the chosen wall blinks while its content is asked; then the pieces beside the opening
+      // blink in turn until one is tapped, then that piece alone.
+      const asking = openingStep.step === "kind";
+      drawRoom(elements.openingCanvas, room, asking ? openingStep.wallIndex : null, asking);
+      if (openingStep.step === "side") {
+        const side = openingStep.side ?? (Math.floor(Date.now() / 650) % 2 ? "end" : "start");
+        strokeWallSegment(elements.openingCanvas.getContext("2d"), openingPiece(elements.openingCanvas, room, guided, side), true);
+      }
+      if (currentScreen === "openings" && openingStep?.step !== "thickness") openingPulseFrame = requestAnimationFrame(draw);
+      return;
+    }
     drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive && !selectedFullConnection);
     if (openingPlacementActive && !selectedFullConnection) {
       const offset = decimal(elements.openingOffset.value);
@@ -1576,11 +1709,16 @@ function renderOpenings() {
   draw();
   renderPresets();
 
-  const missingThickness = latestOpeningWithoutThickness(room);
+  const missingThickness = openingStep?.step === "thickness" ? guided : latestOpeningWithoutThickness(room);
   elements.openingThicknessPrompt.hidden = !missingThickness;
   if (missingThickness) {
-    elements.openingThicknessText.textContent = `Укажите толщину стены для: ${typeName(missingThickness.kind)}`;
+    elements.openingThicknessText.textContent = `Толщина стены у ${OPENING_GENITIVE[missingThickness.kind]} ?`;
   }
+  // The kind buttons show the kind of the opening being placed, and all of them pulse while it is asked.
+  const shownKind = guided?.kind ?? (editingOpeningId ? openingKind : null);
+  for (const button of kindButtons) button.classList.toggle("active", button.dataset.kind === shownKind);
+  kindButtons[0]?.parentElement?.classList.toggle("ask", openingStep?.step === "kind");
+  syncHint();
 
   elements.openingList.replaceChildren();
   for (const opening of room.openings) {
@@ -1597,7 +1735,7 @@ function renderOpenings() {
     text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${cornerName(Math.max(room.walls.findIndex((wall) => wall.id === opening.wall_id), 0))} ${formatLength(opening.offset_m)} м${thickness}`;
     const actions = document.createElement("div");
     actions.className = "row-actions";
-    if (opening.kind !== "window") {
+    if (opening.kind !== "window" && !isEntranceOpening(currentRoomIndex, opening)) {
       const transition = document.createElement("button");
       transition.type = "button";
       transition.className = "secondary compact";
@@ -2596,6 +2734,7 @@ for (const input of [elements.roomName, elements.firstLength, elements.secondLen
         if (missing && decimal(input.value) > 0) {
           packageData = setOpeningWallThickness(packageData, currentRoomIndex, missing.id, input.value);
           renderOpenings();
+          afterOpeningThickness(missing.id);
         }
       }
     }
@@ -2609,6 +2748,8 @@ for (const input of [elements.roomName, elements.firstLength, elements.secondLen
 }
 for (const input of [elements.openingWall, elements.openingOffset, elements.openingWidth]) {
   input.addEventListener("input", () => {
+    // In the guided steps the distance is applied by its own "change" handler, never as a new opening.
+    if (openingStep) return;
     if (input === elements.openingOffset) openingOffsetTouched = true;
     else centerOpeningOffset();
     openingPlacementActive = true;
@@ -2639,6 +2780,15 @@ for (const input of [
   });
 }
 for (const button of kindButtons) button.addEventListener("click", () => {
+  if (openingStep) {
+    chooseOpeningKind(button.dataset.kind);
+    return;
+  }
+  if (!editingOpeningId) {
+    // Nothing is being placed: the wall comes first.
+    showError("Сначала нажмите на стену, где это находится.");
+    return;
+  }
   openingPlacementActive = true;
   setKind(button.dataset.kind);
 });
@@ -3041,27 +3191,58 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
     const [x1, y1, x2, y2] = canvasWallSegment(elements.openingCanvas, room, wallIndex, opening);
     return distanceToCanvasSegment(x, y, [x1, y1], [x2, y2]) < 36;
   });
+  const placing = stepOpening();
+  if (openingStep?.step === "side" && placing && placing.wall_id === wall.id && (!hit || hit.id === placing.id)) {
+    // The tap tells which piece of the wall anchors the opening: left or right of its middle.
+    const [sx, sy, ex, ey] = canvasWallSegment(elements.openingCanvas, room, wallIndex, { offset_m: 0, width_m: wall.length_m });
+    const along = ((x - sx) * (ex - sx) + (y - sy) * (ey - sy)) / ((ex - sx) ** 2 + (ey - sy) ** 2 || 1) * wall.length_m;
+    startOpeningDistance(along > placing.offset_m + placing.width_m / 2 ? "end" : "start");
+    return;
+  }
   if (hit) {
     // A placed door leads into the room behind it; a window or passage opens for editing (doors via the list).
-    if (connectionForOpening(packageData, currentRoomIndex, hit.id)) return;
+    // The entrance leads outside and has no room behind it.
+    if (connectionForOpening(packageData, currentRoomIndex, hit.id) || isEntranceOpening(currentRoomIndex, hit)) return;
+    openingStep = null;
     if (hit.kind === "door") openAdjacent(currentRoomIndex, hit.id);
     else beginOpeningEdit(hit);
     return;
   }
-  // Keep the chosen type; only the width goes back to its default so an edited size does not carry over.
+  if (connectionsForWall(packageData, currentRoomIndex, wall.id).some((item) => (item.mode ?? "full_wall") === "full_wall")) {
+    showError("Эта стена целиком общая с соседней комнатой: её двери и окна уже на месте.");
+    return;
+  }
+  // A tap on a wall starts a new opening there: first the question what is in it.
   clearOpeningEdit(false);
-  setKind(openingKind, true, false);
-  elements.openingWall.value = String(wallIndex);
-  centerOpeningOffset();
+  clearError();
+  openingStep = { step: "kind", wallIndex };
+  renderOpenings();
+});
+// The distance from the corner, dictated or typed, puts the opening in its place.
+elements.openingOffset.addEventListener("change", () => {
+  if (openingStep?.step !== "side" || !openingStep.side) return;
+  const room = packageData.rooms[currentRoomIndex];
+  const opening = stepOpening();
+  if (!opening) return;
+  const wallIndex = openingWallIndex(room, opening);
+  const length = room.walls[wallIndex].length_m;
+  const value = decimal(elements.openingOffset.value);
+  if (!Number.isFinite(value) || value < 0 || !String(elements.openingOffset.value).trim()) return;
+  const offset = openingStep.side === "start" ? value : length - value - opening.width_m;
+  if (offset < -1e-9 || offset + opening.width_m > length + 1e-9) {
+    showError(`${typeName(opening.kind)} не помещается: от угла ${formatLength(value)} м, а вся стена ${formatLength(length)} м. Назовите расстояние ещё раз.`);
+    return;
+  }
   try {
-    packageData = addOpeningToPackage(packageData, currentRoomIndex, openingFormValues());
+    packageData = updateOpeningInPackage(packageData, currentRoomIndex, opening.id, {
+      kind: opening.kind, wallIndex, offsetM: String(Math.round(Math.max(0, offset) * 1000) / 1000), widthM: String(opening.width_m),
+    });
   } catch (error) {
     showError(error);
     return;
   }
-  elements.openingOffset.value = "0";
-  renderOpenings();
-  await persist();
+  clearError();
+  finishOpeningPlacement(opening.id);
 });
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();

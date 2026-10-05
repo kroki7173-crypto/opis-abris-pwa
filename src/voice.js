@@ -426,8 +426,9 @@ export function createVoiceController(scope, onStatus = () => {}) {
             return;
           }
           session.cancelled = true;
-          onStatus("Микрофон выключен: ничего не услышал.", false);
+          // Closed first, then told: a message given while still "listening" never hid itself.
           session.cancel();
+          onStatus("Микрофон выключен: ничего не услышал.", false);
         }, Math.max(1000, Number(timeoutMs) || 8000));
       };
       recognition.onresult = (event) => {
