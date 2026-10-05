@@ -930,13 +930,21 @@ function roomLocalPoint(room, point) {
   return [delta[0] * unit[0] + delta[1] * unit[1], delta[0] * inward[0] + delta[1] * inward[1]];
 }
 function roomPointToCanvas(room, box, point) {
-  const [x, y] = roomLocalPoint(room, point);
+  const [x, y] = box.world ? point : roomLocalPoint(room, point);
   return [box.left + x * box.scale, box.bottom - y * box.scale];
 }
-// Fits a room of any shape into the canvas; the first wall stays horizontal along the bottom.
+// Only the entrance is "always at the bottom" (Bolat, 05.10.2026): every room behind a door is drawn the way it
+// stands on the plan, so the technician sees its walls where they are. A rectangle whose first wall does not run
+// left to right on the plan, and any non-rectangular room, go through the plan-oriented drawing.
+function drawsOnPlan(room) {
+  if (isPolygonRoom(room)) return true;
+  const angle = ((room?.walls?.[0]?.angle_deg ?? 0) % 360 + 360) % 360;
+  return angle > 1e-6 && angle < 360 - 1e-6;
+}
+// Fits a room into the canvas in its plan orientation (plan coordinates, y up).
 function polygonBox(canvas, room) {
   const margin = 76;
-  const local = roomPoints(room).slice(0, -1).map((point) => roomLocalPoint(room, point));
+  const local = roomPoints(room).slice(0, -1);
   const xs = local.map((point) => point[0]);
   const ys = local.map((point) => point[1]);
   const spanX = Math.max(Math.max(...xs) - Math.min(...xs), 0.1);
@@ -947,10 +955,11 @@ function polygonBox(canvas, room) {
     left: (canvas.width - spanX * scale) / 2 - Math.min(...xs) * scale,
     bottom: band.top + (band.height - spanY * scale) / 2 + Math.max(...ys) * scale,
     scale,
+    world: true,
   };
 }
 function canvasWallSegment(canvas, room, wallIndex, opening) {
-  if (!isPolygonRoom(room)) return openingSegment(roomBox(canvas, room), wallIndex, opening);
+  if (!drawsOnPlan(room)) return openingSegment(roomBox(canvas, room), wallIndex, opening);
   const box = polygonBox(canvas, room);
   const [start, end] = roomPoints(room).slice(wallIndex, wallIndex + 2).map((point) => roomPointToCanvas(room, box, point));
   const length = Math.hypot(end[0] - start[0], end[1] - start[1]) || 1;
@@ -969,7 +978,7 @@ function distanceToCanvasSegment(x, y, a, b) {
 }
 // Canvas-space outline of a room, used to tell a tap inside the room from a tap on its wall.
 function canvasRoomOutline(canvas, room) {
-  if (isPolygonRoom(room)) {
+  if (drawsOnPlan(room)) {
     const box = polygonBox(canvas, room);
     return roomPoints(room).slice(0, -1).map((point) => roomPointToCanvas(room, box, point));
   }
@@ -994,7 +1003,7 @@ function tapIsInsideRoom(canvas, room, x, y) {
 }
 
 function nearestWallIndex(canvas, room, x, y) {
-  if (isPolygonRoom(room)) {
+  if (drawsOnPlan(room)) {
     const box = polygonBox(canvas, room);
     const points = roomPoints(room).map((point) => roomPointToCanvas(room, box, point));
     const distances = room.walls.map((_, index) => distanceToCanvasSegment(x, y, points[index], points[index + 1]));
@@ -1039,7 +1048,7 @@ function drawCornerLetters(context, corners, outward) {
     context.fillText(cornerName(index), corner[0] + bisector[0] / length * 30, corner[1] + bisector[1] / length * 30);
   });
 }
-function drawPolygonRoom(canvas, room, selectedWall, attention) {
+function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
   const text = uiColor("--text", "#1a1a1a");
@@ -1059,7 +1068,8 @@ function drawPolygonRoom(canvas, room, selectedWall, attention) {
 
   room.walls.forEach((wall, wallIndex) => {
     const active = selectedWall === wallIndex;
-    strokeWallSegment(context, [points[wallIndex][0], points[wallIndex][1], points[wallIndex + 1][0], points[wallIndex + 1][1]], active && attention, measured);
+    strokeWallSegment(context, [points[wallIndex][0], points[wallIndex][1], points[wallIndex + 1][0], points[wallIndex + 1][1]],
+      active && attention, wall.source === "unmeasured" ? uiColor("--unmeasured", "#8a93a3") : measured);
   });
 
   const end = points[points.length - 1];
@@ -1087,12 +1097,13 @@ function drawPolygonRoom(canvas, room, selectedWall, attention) {
   context.fillStyle = text;
   context.font = "700 20px system-ui";
   room.walls.forEach((wall, wallIndex) => {
+    if (wall.source === "unmeasured") return;
     const a = points[wallIndex];
     const b = points[wallIndex + 1];
     const normal = outward(a, b);
     context.fillText(formatLength(wall.length_m), (a[0] + b[0]) / 2 + normal[0] * 30, (a[1] + b[1]) / 2 + normal[1] * 30);
   });
-  drawCornerLetters(context, corners, outward);
+  if (letters) drawCornerLetters(context, corners, outward);
 }
 // Walls end square so corners close cleanly; the wall being asked for pulses in a strong red with a glow
 // and keeps flat ends so it never rounds over its neighbours.
@@ -1129,8 +1140,8 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   context.fillRect(0, 0, canvas.width, canvas.height);
   canvas.dimensionHitboxes = [];
   if (!room) return;
-  if (isPolygonRoom(room)) {
-    drawPolygonRoom(canvas, room, selectedWall, attention);
+  if (drawsOnPlan(room)) {
+    drawPolygonRoom(canvas, room, selectedWall, attention, letters);
     return;
   }
 
@@ -2316,13 +2327,18 @@ function renderAdjacent() {
   const previewOffset = mismatch
     ? (Number.isFinite(childOffset) ? Math.max(0, Math.min(childOffset, previewWidth - opening.width_m)) : 0)
     : Math.max(0, previewWidth - opening.offset_m - opening.width_m);
+  // The new room is drawn turned the way it will stand on the plan: its door wall faces the parent's.
+  const oriented = createRectangleRoom({
+    name: "preview", firstLengthM: previewWidth, secondLengthM: previewDepth,
+    baseAngleDeg: ((parentWall.angle_deg ?? 0) + 180) % 360,
+  });
+  const previewSources = [
+    mismatch ? "measured" : "inherited_shared", second > 0 ? "measured" : "unmeasured",
+    "inferred_opposite", second > 0 ? "inferred_opposite" : "unmeasured",
+  ];
   const preview = {
-    walls: [
-      { length_m: previewWidth, source: mismatch ? "measured" : "inherited_shared", id: "adjacent-preview-1" },
-      { length_m: previewDepth, source: second > 0 ? "measured" : "unmeasured", id: "adjacent-preview-2" },
-      { length_m: previewWidth, source: "inferred_opposite", id: "adjacent-preview-3" },
-      { length_m: previewDepth, source: second > 0 ? "inferred_opposite" : "unmeasured", id: "adjacent-preview-4" },
-    ],
+    ...oriented,
+    walls: oriented.walls.map((wall, index) => ({ ...wall, id: "adjacent-preview-" + (index + 1), source: previewSources[index] })),
     openings: previewWidth >= opening.width_m ? [{
       id: "adjacent-preview-opening",
       kind: opening.kind,
