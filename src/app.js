@@ -20,6 +20,7 @@ import {
   removeOpeningFromPackage,
   roomPoints,
   setOpeningWallThickness,
+  setWallLength,
   solveOutline,
   updateInteriorInPackage,
   updateOpeningInPackage,
@@ -70,6 +71,7 @@ const ids = [
   "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "hintCard", "hintText",
   "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
+  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput",
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 const kindButtons = [...document.querySelectorAll("[data-kind]")];
@@ -105,6 +107,11 @@ const WORK_SCREENS = ["room", "openings", "interior", "adjacent", "shape", "done
 let workScreen = null;
 // Plan state confirmed with "Готово"; "Отличная работа" is shown only for exactly that plan.
 let confirmedPlan = null;
+// The remarks as they were at "Закончить замер" ({ key, text }): a fixed one stays in the list struck through
+// (Bolat, 06.10.2026). null until the survey was finished once.
+let issueBaseline = null;
+// A remark led to another screen: a button there returns to the remarks.
+let returnToIssues = false;
 function planSignature(pkg) {
   return JSON.stringify([pkg?.rooms ?? [], pkg?.connections ?? []]);
 }
@@ -667,6 +674,7 @@ function showScreen(name) {
   syncHeaderTitle();
   if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
+  if (name !== "openings" && elements.wallFixBar) elements.wallFixBar.hidden = true;
   if (name !== "adjacent") cancelAnimationFrame(adjacentPulseFrame);
   const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar, .address-field, [data-mic-host]");
   (microphoneHost ?? document.querySelector(".shell")).append(elements.contextMicButton);
@@ -691,6 +699,8 @@ function showScreen(name) {
   const tab = name === "start" && startMode === "list" ? "objects" : name === "settings" || name === "help" ? name : "measure";
   startMode = "new";
   for (const key of ["measure", "objects", "settings", "help"]) elements[key + "NavButton"].classList.toggle("active", tab === key);
+  if (name === "done") returnToIssues = false;
+  syncIssuesReturn();
   syncHint();
   refreshVoiceTarget();
   resyncCanvasesSoon();
@@ -706,6 +716,8 @@ function draftValue() {
     screen: currentScreen,
     workScreen,
     confirmedPlan,
+    issueBaseline,
+    returnToIssues,
     openingAnchors,
     package: packageData,
     currentRoomIndex,
@@ -745,6 +757,8 @@ function draftValue() {
   };
 }
 async function persist() {
+  // Every saved change may fix a remark: the way back shows how many are left.
+  try { syncIssuesReturn(); } catch { /* the count is a convenience */ }
   try {
     const value = draftValue();
     await saveDraft(value);
@@ -798,6 +812,8 @@ function restoreForm(draft) {
   entrance = restoreEntrance(draft?.entrance);
   workScreen = WORK_SCREENS.includes(draft?.workScreen) ? draft.workScreen : null;
   confirmedPlan = typeof draft?.confirmedPlan === "string" ? draft.confirmedPlan : null;
+  issueBaseline = Array.isArray(draft?.issueBaseline) ? draft.issueBaseline : null;
+  returnToIssues = Boolean(draft?.returnToIssues);
   openingAnchors = draft?.openingAnchors && typeof draft.openingAnchors === "object" ? { ...draft.openingAnchors } : {};
   activeRoomWall = entrance.step === "thickness" ? null
     : entrance.step === "anchor" ? null : entrance.wall;
@@ -1147,7 +1163,11 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
     const a = points[wallIndex];
     const b = points[wallIndex + 1];
     const normal = outward(a, b);
-    context.fillText(formatLength(wall.length_m), (a[0] + b[0]) / 2 + normal[0] * 30, (a[1] + b[1]) / 2 + normal[1] * 30);
+    const x = (a[0] + b[0]) / 2 + normal[0] * 30;
+    const y = (a[1] + b[1]) / 2 + normal[1] * 30;
+    context.fillText(formatLength(wall.length_m), x, y);
+    canvas.lengthHitboxes = canvas.lengthHitboxes ?? [];
+    canvas.lengthHitboxes.push({ wallIndex, left: x - 46, right: x + 46, top: y - 30, bottom: y + 30 });
   });
   if (letters) drawCornerLetters(context, corners, outward);
 }
@@ -1185,6 +1205,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   context.fillStyle = field;
   context.fillRect(0, 0, canvas.width, canvas.height);
   canvas.dimensionHitboxes = [];
+  canvas.lengthHitboxes = [];
   if (!room) return;
   if (drawsOnPlan(room)) {
     drawPolygonRoom(canvas, room, selectedWall, attention, letters);
@@ -1237,6 +1258,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
     context.rotate(label.rotate);
     context.fillText(format(wall.length_m), 0, 0);
     context.restore();
+    canvas.lengthHitboxes.push({ wallIndex: label.wall, left: label.x - 58, right: label.x + 58, top: label.y - 58, bottom: label.y + 58 });
     canvas.dimensionHitboxes.push({
       wallIndex: label.wall,
       inputId: label.input,
@@ -2086,16 +2108,18 @@ function renderOpenings() {
     const row = document.createElement("div");
     row.className = "opening-row";
     const text = document.createElement("span");
-    const thickness = opening.wall_thickness_m > 0
-      ? ` · стена ${formatLength(opening.wall_thickness_m)} м`
-      : " · толщина не указана";
     // The distance is shown from the corner the technician tapped and measured from (Bolat, 05.10.2026);
     // openings from before that choice was kept count from the nearer corner.
     const wallIndex = Math.max(openingWallIndex(room, opening), 0);
     const fromEnd = room.walls[wallIndex].length_m - opening.offset_m - opening.width_m;
     const nearEnd = openingAnchors[opening.id] ? openingAnchors[opening.id] === "end" : fromEnd < opening.offset_m - 1e-9;
     const corner = cornerName(nearEnd ? (wallIndex + 1) % room.walls.length : wallIndex);
-    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${corner} ${formatLength(nearEnd ? fromEnd : opening.offset_m)} м${thickness}`;
+    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${corner} ${formatLength(nearEnd ? fromEnd : opening.offset_m)} м · `;
+    // The thickness is said again right here; the rooms behind the door move with it (Bolat, 06.10.2026).
+    text.append(fixButton({
+      type: "thickness", roomIndex: currentRoomIndex, openingId: opening.id, value: opening.wall_thickness_m ?? null,
+      label: opening.wall_thickness_m > 0 ? `стена ${formatLength(opening.wall_thickness_m)} м` : "толщина ?",
+    }));
     const actions = document.createElement("div");
     actions.className = "row-actions";
     if (opening.kind !== "window" && !isEntranceOpening(currentRoomIndex, opening)) {
@@ -2110,14 +2134,13 @@ function renderOpenings() {
     }
     row.append(text, actions);
     elements.openingList.append(row);
-    // A door that joins two rooms is fixed by both of them: no buttons that could only be grey.
-    if (connection || fullConnection) continue;
+    // Every opening can be corrected (Bolat, 06.10.2026): a door with a room behind it moves along its wall and
+    // the room follows; only removing it would leave that room hanging.
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "secondary compact";
     edit.textContent = "Изменить";
-    edit.disabled = Boolean(connection) || fullConnection;
-    edit.title = edit.disabled ? "Связанный проём изменяется вместе с комнатами" : "Изменить проём";
+    edit.title = "Изменить проём";
     // "Изменить" walks the same steps as a new opening: the piece of wall, the distance, the width.
     edit.addEventListener("click", () => {
       clearOpeningEdit(false);
@@ -2129,7 +2152,7 @@ function renderOpenings() {
     remove.type = "button";
     remove.className = "danger compact";
     remove.textContent = "Удалить";
-    remove.disabled = Boolean(connection) || fullConnection;
+    remove.hidden = Boolean(connection);
     remove.addEventListener("click", async () => {
       try {
         packageData = removeOpeningFromPackage(packageData, currentRoomIndex, opening.id);
@@ -2739,41 +2762,44 @@ function renderAdjacent() {
 const OPENING_OF = { door: "двери", window: "окна", passage: "проёма" };
 const BEHIND_OPENING = { door: "дверью", passage: "проёмом" };
 // What the app does not understand for the final plan, in words of the technician, each with its place
-// on the plan and the screen where it is fixed (Bolat, 05.10.2026).
+// on the plan, the screen where it is fixed and the numbers that can be said again right there
+// (Bolat, 05-06.10.2026).
 function problemIssue(pkg, problem) {
   const name = (index) => `«${pkg.rooms[index]?.name ?? `Помещение ${index + 1}`}»`;
   const opening = pkg.rooms[problem.roomIndex]?.openings?.find((item) => item.id === problem.openingId);
   const room = { type: "room", roomIndex: problem.roomIndex };
-  switch (problem.kind) {
-    case "no_door":
-      return {
-        text: problem.roomIndex === 0
+  const id = (index) => pkg.rooms[index]?.id ?? "";
+  const key = [problem.kind, id(problem.roomIndex), id(problem.otherRoomIndex ?? problem.fromRoomIndex), problem.openingId ?? ""].join(":");
+  const fixes = (problem.fixes ?? []).map((fix) => ({
+    ...fix,
+    label: fix.type === "wall"
+      ? `${name(fix.roomIndex)} ${formatLength(fix.value)} м`
+      : "толщина ?",
+  }));
+  const text = (() => {
+    switch (problem.kind) {
+      case "no_door":
+        return problem.roomIndex === 0
           ? "Нет входной двери: коснитесь стены, где она."
-          : `${name(problem.roomIndex)}: нет двери — непонятно, как в неё войти. Коснитесь стены, где дверь.`,
-        action: room,
-      };
-    case "no_thickness":
-      return { text: `${name(problem.roomIndex)}: не названа толщина стены у ${OPENING_OF[opening?.kind] ?? "проёма"}.`, action: room };
-    case "door_leads_nowhere":
-      return {
-        text: `${name(problem.roomIndex)}: за ${BEHIND_OPENING[opening?.kind] ?? "дверью"} ничего не обмерено — непонятно, что там. Обмерьте комнату за ней.`,
-        action: { type: "door", roomIndex: problem.roomIndex, openingId: problem.openingId },
-      };
-    case "door_missing_behind":
-      return {
-        text: `${name(problem.roomIndex)}: из ${name(problem.fromRoomIndex)} сюда ведёт дверь, а здесь её нет. Поставьте её на этой стене.`,
-        action: room,
-      };
-    case "rooms_overlap":
-      return { text: `${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} налезают друг на друга. Проверьте их размеры.`, action: room };
-    case "thin_wall":
-      return {
-        text: `Стена между ${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} получается ${Math.max(0, Math.round(problem.gap_m * 100))} см — так не бывает. Проверьте размеры комнат.`,
-        action: room,
-      };
-    default:
-      return { text: "Непонятное место на плане.", action: room };
-  }
+          : `${name(problem.roomIndex)}: нет двери — непонятно, как в неё войти. Коснитесь стены, где дверь.`;
+      case "no_thickness":
+        return `${name(problem.roomIndex)}: не названа толщина стены у ${OPENING_OF[opening?.kind] ?? "проёма"}. Нажмите и назовите её.`;
+      case "door_leads_nowhere":
+        return `${name(problem.roomIndex)}: за ${BEHIND_OPENING[opening?.kind] ?? "дверью"} ничего не обмерено — непонятно, что там. Обмерьте комнату за ней.`;
+      case "door_missing_behind":
+        return `${name(problem.roomIndex)}: из ${name(problem.fromRoomIndex)} сюда ведёт дверь, а здесь её нет. Поставьте её на этой стене.`;
+      case "rooms_overlap":
+        return `${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} налезают друг на друга. Нажмите неверный размер и назовите его заново.`;
+      case "thin_wall":
+        return `Стена между ${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} получается ${Math.max(0, Math.round(problem.gap_m * 100))} см — так не бывает. Нажмите неверный размер и назовите его заново.`;
+      default:
+        return "Непонятное место на плане.";
+    }
+  })();
+  const action = problem.kind === "door_leads_nowhere"
+    ? { type: "door", roomIndex: problem.roomIndex, openingId: problem.openingId }
+    : problem.kind === "no_thickness" ? null : room;
+  return { key, text, action, fixes };
 }
 function validationIssues(pkg) {
   const issues = [];
@@ -2781,15 +2807,16 @@ function validationIssues(pkg) {
     validatePackage(pkg);
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
-    issues.push({ text, action: /^Адрес/.test(text) ? { type: "address" } : null });
+    issues.push({ key: "invalid:" + text, text, action: /^Адрес/.test(text) ? { type: "address" } : null, fixes: [] });
     return issues;
   }
   for (const problem of planProblems(pkg)) issues.push({ ...problemIssue(pkg, problem), point: problem.point });
   const seen = new Set();
-  return issues.filter((issue) => !seen.has(issue.text) && seen.add(issue.text));
+  return issues.filter((issue) => !seen.has(issue.key) && seen.add(issue.key));
 }
-// Every warning leads to the place where it is fixed.
+// Every warning leads to the place where it is fixed; from there a button returns to the remarks.
 function followIssue(action) {
+  returnToIssues = true;
   if (action.type === "address") {
     startMode = "new";
     showScreen("start");
@@ -2803,37 +2830,104 @@ function followIssue(action) {
   } else if (action.type === "door") {
     goThroughOpening(action.roomIndex, action.openingId);
   }
+  persist();
+}
+// A number in a remark is said again on the spot (Bolat, 06.10.2026): the microphone opens on it, and the
+// whole plan is rebuilt for the new value.
+async function applyFix(fix, raw) {
+  const value = decimal(raw);
+  if (!(value > 0)) return;
+  try {
+    packageData = fix.type === "wall"
+      ? setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value))
+      : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
+    clearError();
+  } catch (error) {
+    showError(error);
+  }
+  if (currentScreen === "done") renderSummary();
+  else if (currentScreen === "openings") renderOpenings();
+  await persist();
+}
+function fixButton(fix) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "fix-number";
+  button.textContent = fix.label;
+  button.addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.className = "fix-input";
+    input.inputMode = "decimal";
+    input.autocomplete = "off";
+    input.value = fix.value ? formatLength(fix.value) : "";
+    input.setAttribute("aria-label", fix.type === "wall" ? "Новая длина стены, м" : "Толщина стены");
+    input.addEventListener("change", () => applyFix(fix, input.value));
+    button.replaceWith(input);
+    selectVoiceTarget(input, fix.type === "wall" ? "measurement" : "thickness", fix.type === "wall" ? "новую длину стены" : "толщину стены");
+    if (voiceController.capability().available) startContextVoice();
+    else input.focus();
+  });
+  return button;
+}
+function issueRows(issues) {
+  const current = new Map(issues.map((issue) => [issue.key, issue]));
+  const baseline = issueBaseline ?? [];
+  const rows = baseline.map((item) => current.get(item.key) ?? { ...item, resolved: true });
+  for (const issue of issues) if (!baseline.some((item) => item.key === issue.key)) rows.push(issue);
+  return rows;
 }
 function renderSummary() {
   if (!packageData?.rooms?.length) return;
   elements.summaryAddress.textContent = packageData.address;
   const issues = validationIssues(packageData);
+  // After "Закончить замер" the survey finishes by itself once the last remark is fixed.
+  if (issueBaseline && !issues.length && confirmedPlan !== planSignature(packageData)) {
+    confirmedPlan = planSignature(packageData);
+    schedulePersist();
+  }
   // "Отличная работа" and the green plan only after "Готово", for exactly the plan that was confirmed
   // (Bolat, 05.10.2026); passing by the plan on the way is not the end of the survey.
   const finished = issues.length === 0 && confirmedPlan === planSignature(packageData);
+  const rows = issueRows(issues);
   elements.planCanvas.planReady = finished;
   // Every place the app does not understand is numbered on the whole plan, the same number as in the list.
-  elements.planCanvas.problemPoints = issues.map((issue) => issue.point ?? null);
+  elements.planCanvas.problemPoints = rows.map((row) => row.resolved ? null : row.point ?? null);
   drawPlan(elements.planCanvas, packageData, planView);
-  elements.validationPanel.hidden = !issues.length && !finished;
+  elements.validationPanel.hidden = !rows.length && !finished;
   elements.validationPanel.classList.toggle("ready", issues.length === 0);
   elements.validationPanel.classList.toggle("needs-work", issues.length > 0);
   elements.validationTitle.textContent = issues.length
     ? `Непонятно для плана: ${issues.length}. Места отмечены на плане номерами.`
-    : "Отличная работа! План готов без замечаний.";
+    : rows.length ? "Отличная работа! Всё исправлено, план готов." : "Отличная работа! План готов без замечаний.";
   elements.validationList.replaceChildren();
-  for (const [index, issue] of issues.entries()) {
+  for (const [index, row] of rows.entries()) {
     const item = document.createElement("li");
-    const number = issue.point ? `${index + 1}. ` : "";
-    if (issue.action) {
-      const link = document.createElement("button");
-      link.type = "button";
-      link.className = "issue-link";
-      link.textContent = number + issue.text + " Исправить →";
-      link.addEventListener("click", () => followIssue(issue.action));
-      item.append(link);
+    const number = `${index + 1}. `;
+    if (row.resolved) {
+      // Fixed since "Закончить замер": struck through, so the technician sees what he has done.
+      item.className = "resolved";
+      const text = document.createElement("s");
+      text.textContent = number + row.text;
+      item.append(text, " — исправлено ✓");
     } else {
-      item.textContent = number + issue.text;
+      const text = document.createElement("p");
+      text.className = "issue-text";
+      text.textContent = number + row.text;
+      item.append(text);
+      if (row.fixes?.length) {
+        const numbers = document.createElement("div");
+        numbers.className = "fix-numbers";
+        for (const fix of row.fixes) numbers.append(fixButton(fix));
+        item.append(numbers);
+      }
+      if (row.action) {
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "issue-link";
+        link.textContent = row.action.type === "door" ? "Обмерить комнату за дверью →" : "Открыть это место →";
+        link.addEventListener("click", () => followIssue(row.action));
+        item.append(link);
+      }
     }
     elements.validationList.append(item);
   }
@@ -2842,7 +2936,43 @@ function renderSummary() {
     celebratedRevision = packageData.updated_at;
     if (navigator.vibrate) navigator.vibrate([55, 35, 85]);
   }
-}function recordDate(record) {
+}
+// A wall length tapped on the doors screen is said again; the room and every room behind it are rebuilt.
+let wallFix = null;
+function startWallFix(wallIndex) {
+  const room = packageData.rooms[currentRoomIndex];
+  wallFix = { type: "wall", roomIndex: currentRoomIndex, wallIndex, value: room.walls[wallIndex].length_m };
+  elements.wallFixLabel.textContent = `Стена ${cornerName(wallIndex)}–${cornerName((wallIndex + 1) % room.walls.length)}, новая длина, м:`;
+  elements.wallFixInput.value = formatLength(wallFix.value);
+  elements.wallFixBar.hidden = false;
+  selectVoiceTarget(elements.wallFixInput, "measurement", "новую длину стены");
+  if (voiceController.capability().available) startContextVoice();
+  else elements.wallFixInput.focus();
+}
+elements.issuesReturnButton.addEventListener("click", () => {
+  clearOpeningEdit();
+  pendingAdjacent = null;
+  showScreen("done");
+  persist();
+});
+elements.wallFixInput.addEventListener("change", async () => {
+  if (!wallFix) return;
+  const fix = wallFix;
+  wallFix = null;
+  elements.wallFixBar.hidden = true;
+  await applyFix(fix, elements.wallFixInput.value);
+});
+// Back to the remarks from the screen a remark opened, with how many are left.
+function syncIssuesReturn() {
+  const visible = Boolean(returnToIssues && issueBaseline && packageData?.rooms?.length && currentScreen !== "done");
+  elements.issuesReturnButton.hidden = !visible;
+  if (!visible) return;
+  const left = validationIssues(packageData).length;
+  elements.issuesReturnButton.textContent = left
+    ? `← К замечаниям: осталось ${left}`
+    : "← К плану: всё исправлено ✓";
+}
+function recordDate(record) {
   const value = record.package?.created_at ?? record.saved_at;
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "Дата не определена";
@@ -3314,6 +3444,8 @@ elements.startButton.addEventListener("click", async () => {
     elements.roomName.value = "Прихожая";
     entrance = newEntrance();
     confirmedPlan = null;
+    issueBaseline = null;
+    returnToIssues = false;
     openingAnchors = {};
     elements.doorAnchor.value = "";
     activeRoomWall = 0;
@@ -3444,11 +3576,14 @@ elements.finishButton.addEventListener("click", async () => {
   try {
     clearOpeningEdit();
     // The app itself decides whether it understands the whole plan (Bolat, 05.10.2026): no question to the
-    // technician. Partitions take the gap between rooms; a door with nothing behind it, a missing door on the
-    // other side, a wall thinner than 5 cm are numbered on the whole plan, each with what is unclear.
-    try { packageData = inferPartitionThickness(packageData); } catch { /* shown in the list below */ }
+    // technician. A door with nothing behind it, a missing door on the other side, a wall thinner than 5 cm are
+    // numbered on the whole plan, each with what is unclear. Partitions take the gap between rooms only in the
+    // file that goes out, so a corrected size never leaves a stale thickness behind.
     pendingAdjacent = null;
-    confirmedPlan = validationIssues(packageData).length ? null : planSignature(packageData);
+    const issues = validationIssues(packageData);
+    issueBaseline = issues.map(({ key, text }) => ({ key, text }));
+    returnToIssues = false;
+    confirmedPlan = issues.length ? null : planSignature(packageData);
     showScreen("done");
     await persist();
   } catch (error) {
@@ -3703,6 +3838,12 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   const bounds = elements.openingCanvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
+  const length = openingStep ? null : (elements.openingCanvas.lengthHitboxes ?? []).find((box) =>
+    x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
+  if (length) {
+    startWallFix(length.wallIndex);
+    return;
+  }
   if (tapIsInsideRoom(elements.openingCanvas, room, x, y)) {
     // A tap inside the room: what is there (storage, column, floor opening) is asked at once at that place.
     clearOpeningEdit();

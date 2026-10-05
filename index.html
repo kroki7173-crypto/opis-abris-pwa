@@ -121,6 +121,8 @@
                 aria-label="План комнаты. Нажмите на стену, чтобы поставить дверь или окно"></canvas>
         <figcaption class="plan-tip">Стена — проём. Дверь — следующая комната. Внутри комнаты — кладовая</figcaption>
       </figure>
+      <label id="wallFixBar" class="wall-fix" hidden><span id="wallFixLabel"></span>
+        <input id="wallFixInput" inputmode="decimal" autocomplete="off"></label>
 
       <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
         <button type="button" data-kind="door" class="type"><span aria-hidden="true">▯</span>Дверь 0,80</button>
@@ -301,6 +303,7 @@
       <p class="hint">Все действия автоматически сохраняются на этом устройстве.</p>
     </section>
 
+    <button id="issuesReturnButton" class="issues-return" type="button" hidden>← К замечаниям</button>
     <nav class="bottom-nav" aria-label="Основная навигация">
       <button id="measureNavButton" class="nav-button active" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18"/><path d="M5 20V8l7-4 7 4v12"/><path d="M10 20v-6h4v6"/></svg><span>Главная</span></button>
       <button id="objectsNavButton" class="nav-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/></svg><span>Объекты</span></button>
