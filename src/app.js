@@ -370,12 +370,19 @@ function resumeWork() {
   if (needsAdjacent && !pendingAdjacent) screen = rooms ? "openings" : "room";
   showScreen(screen);
 }
-function openAddressStep() {
+// Step 1 opens calm, with the hint and the field in view; the keyboard comes only when the technician
+// taps the field or asked to change the address (`focus`).
+function openAddressStep(focus = false) {
   startMode = "new";
   if (editingAddress()) elements.address.value = packageData.address;
   showScreen("start");
-  elements.address.focus();
+  if (focus) elements.address.focus();
 }
+// iPhone pushes the page up when the keyboard opens and the hint slides under the status bar;
+// once the keyboard is out, the page goes back to the top.
+elements.address.addEventListener("focus", () => {
+  for (const delay of [60, 350]) setTimeout(() => window.scrollTo(0, 0), delay);
+});
 
 const THEME_KEY = "opis-pwa-theme";
 const THEME_CONTROL_KEY = "opis-pwa-show-theme-control";
@@ -473,7 +480,7 @@ function initializeUi() {
     resumeWork();
   });
   elements.headerTitle.addEventListener("click", () => {
-    if (currentScreen !== "start") openAddressStep();
+    if (currentScreen !== "start") openAddressStep(true);
   });
   elements.rememberAddressButton.addEventListener("click", rememberAddressCorrection);
   elements.addressNewButton.addEventListener("click", () => {
@@ -1234,11 +1241,11 @@ function hintsEnabled() {
 function hintText() {
   if (currentScreen === "start") {
     return elements.startScreen.dataset.mode === "list" ? ""
-      : "Шаг 1. Введите адрес объекта: наберите его или нажмите микрофон и скажите. Потом нажмите «Начать».";
+      : "Наберите адрес или нажмите микрофон и скажите его. Потом нажмите «Начать».";
   }
   if (currentScreen === "room") return elements.roomTip.textContent;
   if (currentScreen === "openings") {
-    return "Выберите внизу дверь, окно или проём и нажмите на стену, где он есть. Нажмите на дверь — перейдёте в комнату за ней. Всё внесли — нажмите «Готово».";
+    return "Есть ещё двери или окна? Выберите под рисунком, что это — дверь, окно или проём, — и нажмите на стену, где оно есть. Чтобы перейти в следующую комнату, нажмите на её дверь.";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
     return validationIssues(packageData).length

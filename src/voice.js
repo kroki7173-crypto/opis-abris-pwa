@@ -151,8 +151,13 @@ function measuredValue(raw, kind, transcript) {
   const tokens = normalizedTokens(raw);
   const meterIndex = tokens.findIndex((token) => METER_WORDS.has(token));
   const centimeterIndex = tokens.findIndex((token) => CENTIMETER_WORDS.has(token));
+  if (tokens.length === 1 && tokens[0] === "полметра") return 0.5;
   if (meterIndex >= 0) {
-    const meters = partNumber(tokens.slice(0, meterIndex)) ?? 0;
+    // "метр двадцать" is one metre twenty: a metre with no number before it is one metre; "полтора метра" is 1,5.
+    const before = tokens.slice(0, meterIndex);
+    const meters = !before.length ? 1
+      : before.length === 1 && /^полтор[аы]$/u.test(before[0]) ? 1.5
+        : partNumber(before) ?? 0;
     const end = centimeterIndex > meterIndex ? centimeterIndex : tokens.length;
     const rest = tokens.slice(meterIndex + 1, end);
     if (rest.includes("половиной")) return meters + 0.5;
