@@ -208,6 +208,13 @@ figcaption i.inferred { border-top-style: solid; border-color: var(--measured); 
 .context-mic { position: fixed; z-index: 24; right: max(1rem, calc((100vw - 48rem) / 2 + 1rem)); bottom: calc(10rem + env(safe-area-inset-bottom)); display: grid; width: 3.6rem; min-height: 3.6rem; padding: 0; place-items: center; border-radius: 50%; color: white; background: var(--busy); border-color: color-mix(in srgb, var(--busy) 68%, #000); box-shadow: 0 0.55rem 1.5rem rgba(30, 122, 69, 0.24); font-size: 1.45rem; }
 .context-mic:hover:not(:disabled) { background: var(--busy); filter: brightness(1.05); }
 .context-mic[hidden] { display: none; }
+html, body { overscroll-behavior: none; }
+/* The first-room screen is one plan that fits the screen: nothing scrolls or bounces. */
+html[data-screen="room"], html[data-screen="room"] body { height: 100%; overflow: hidden; }
+#roomScreen { touch-action: none; }
+#roomScreen .plan-stage canvas { height: max(12rem, calc(100dvh - 14.8rem - env(safe-area-inset-top) - env(safe-area-inset-bottom))); }
+[data-mic-host] { position: relative; }
+[data-mic-host] .context-mic.docked { position: absolute; top: 0.6rem; right: 0.6rem; z-index: 3; margin: 0; }
 .address-field { position: relative; }
 .address-field input { padding-right: 3.6rem; }
 .address-field .context-mic.docked { position: absolute; top: 50%; right: 0.3rem; margin: 0; transform: translateY(-50%); }

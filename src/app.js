@@ -47,7 +47,7 @@ const ids = [
   "adjacentShapeButton", "adjacentShapeNote",
   "address", "roomName", "firstLength", "secondLength", "wallThickness", "startButton",
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
-  "backButton", "saveRoomButton", "openingCanvas", "openingWall", "openingOffset",
+  "openingCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
   "openingEditPanel", "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText",
@@ -64,7 +64,7 @@ const ids = [
   "editOpeningsButton", "newButton", "roomCanvas", "planCanvas", "saveStatus",
   "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
-  "roomDoorButton", "roomWindowButton",
+
   "settingsDialog", "settingsClose", "darkThemeSetting", "showThemeControl",
   "helpDialog", "helpClose", "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
@@ -375,16 +375,6 @@ function initializeUi() {
     objectsNavRequested = true;
     showScreen("start");
   });
-  elements.roomDoorButton.addEventListener("click", () => {
-    openingPlacementActive = true;
-    setKind("door");
-    elements.saveRoomButton.click();
-  });
-  elements.roomWindowButton.addEventListener("click", () => {
-    openingPlacementActive = true;
-    setKind("window");
-    elements.saveRoomButton.click();
-  });
   elements.openingOffsetButton.addEventListener("click", () => {
     selectVoiceTargetById("openingOffset");
     elements.openingOffset.focus({ preventScroll: true });
@@ -470,11 +460,12 @@ function installPlanGestures() {
 
 function showScreen(name) {
   currentScreen = name;
+  document.documentElement.dataset.screen = name;
   syncHeaderTitle();
   if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
   if (name !== "adjacent") cancelAnimationFrame(adjacentPulseFrame);
-  const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar, .address-field");
+  const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar, .address-field, [data-mic-host]");
   (microphoneHost ?? document.querySelector(".shell")).append(elements.contextMicButton);
   elements.contextMicButton.classList.toggle("docked", Boolean(microphoneHost));
   for (const screen of ["start", "room", "openings", "interior", "adjacent", "shape", "done"]) {
@@ -850,15 +841,7 @@ function drawPolygonRoom(canvas, room, selectedWall, attention) {
 
   room.walls.forEach((wall, wallIndex) => {
     const active = selectedWall === wallIndex;
-    context.strokeStyle = active && attention ? danger : measured;
-    context.globalAlpha = active && attention ? 0.7 + 0.3 * ((Math.sin(Date.now() / 220) + 1) / 2) : 1;
-    context.lineWidth = active && attention ? 14 : 9;
-    context.lineCap = "round";
-    context.beginPath();
-    context.moveTo(points[wallIndex][0], points[wallIndex][1]);
-    context.lineTo(points[wallIndex + 1][0], points[wallIndex + 1][1]);
-    context.stroke();
-    context.globalAlpha = 1;
+    strokeWallSegment(context, [points[wallIndex][0], points[wallIndex][1], points[wallIndex + 1][0], points[wallIndex + 1][1]], active && attention, measured);
   });
 
   const end = points[points.length - 1];
@@ -893,6 +876,28 @@ function drawPolygonRoom(canvas, room, selectedWall, attention) {
   });
   drawCornerLetters(context, corners, outward);
 }
+// Walls end square so corners close cleanly; the wall being asked for pulses in a strong red with a glow
+// and keeps flat ends so it never rounds over its neighbours.
+function strokeWallSegment(context, segment, pulsing, color) {
+  context.save();
+  if (pulsing) {
+    const phase = (Math.sin(Date.now() / 170) + 1) / 2;
+    context.strokeStyle = "#e5252a";
+    context.shadowColor = "rgba(229, 37, 42, 0.85)";
+    context.shadowBlur = 6 + 18 * phase;
+    context.lineWidth = 10 + 5 * phase;
+    context.lineCap = "butt";
+  } else {
+    context.strokeStyle = color;
+    context.lineWidth = 9;
+    context.lineCap = "square";
+  }
+  context.beginPath();
+  context.moveTo(segment[0], segment[1]);
+  context.lineTo(segment[2], segment[3]);
+  context.stroke();
+  context.restore();
+}
 function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds = ["firstLength", "secondLength"]) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
@@ -921,15 +926,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   room.walls.forEach((wall, wallIndex) => {
     const segment = segments[wallIndex];
     const active = selectedWall === wallIndex;
-    context.strokeStyle = active && attention ? danger : wall.source === "unmeasured" ? border : measured;
-    context.globalAlpha = active && attention ? 0.7 + 0.3 * ((Math.sin(Date.now() / 220) + 1) / 2) : 1;
-    context.lineWidth = active && attention ? 14 : 9;
-    context.lineCap = "round";
-    context.beginPath();
-    context.moveTo(segment[0], segment[1]);
-    context.lineTo(segment[2], segment[3]);
-    context.stroke();
-    context.globalAlpha = 1;
+    strokeWallSegment(context, segment, active && attention, wall.source === "unmeasured" ? border : measured);
   });
 
   for (const interior of room.interiors ?? []) {
@@ -2190,6 +2187,13 @@ for (const input of [elements.firstLength, elements.secondLength]) {
     showScreen("shape");
   });
 }
+// Both walls known: go straight to doors and windows, no "continue" button.
+for (const input of [elements.firstLength, elements.secondLength]) {
+  input.addEventListener("change", () => {
+    if (currentScreen !== "room") return;
+    if (decimal(elements.firstLength.value) > 0 && decimal(elements.secondLength.value) > 0) saveRoomFromForm();
+  });
+}
 for (const input of [elements.roomName, elements.firstLength, elements.secondLength, elements.wallThickness]) {
   input.addEventListener("input", () => {
     if (input === elements.wallThickness) {
@@ -2252,6 +2256,12 @@ for (const button of interiorKindButtons) button.addEventListener("click", () =>
 elements.startButton.addEventListener("click", async () => {
   try {
     packageData = createPackage(elements.address.value);
+    // A new object never inherits the previous room's sizes.
+    elements.firstLength.value = "";
+    elements.secondLength.value = "";
+    elements.wallThickness.value = "";
+    elements.roomName.value = "Прихожая";
+    activeRoomWall = 0;
     currentRoomIndex = 0;
     pendingAdjacent = null;
     pendingShape = null;
@@ -2283,7 +2293,7 @@ async function saveFirstRoom(room) {
   showScreen("openings");
   await persist();
 }
-elements.saveRoomButton.addEventListener("click", async () => {
+async function saveRoomFromForm() {
   try {
     if (!confirmFirstRoomReplacement()) return;
     await saveFirstRoom(createRectangleRoom({
@@ -2295,7 +2305,7 @@ elements.saveRoomButton.addEventListener("click", async () => {
   } catch (error) {
     showError(error);
   }
-});
+}
 elements.openingsBackButton.addEventListener("click", () => {
   clearOpeningEdit();
   if (currentRoomIndex === 0 && packageData.rooms.length === 1) {

@@ -65,8 +65,6 @@
     </section>
 
     <section id="roomScreen" class="card screen plan-screen" hidden>
-      <div class="plan-toolbar"></div>
-
       <div class="canvas-data-inputs">
         <label for="roomName">Название комнаты</label>
         <input id="roomName" value="Прихожая" maxlength="120">
@@ -78,17 +76,12 @@
         <input id="wallThickness" inputmode="decimal" placeholder="0,10">
       </div>
 
-      <figure class="preview plan-stage">
+      <figure class="preview plan-stage" data-mic-host>
         <canvas id="roomCanvas" width="720" height="560"
                 aria-label="План комнаты. Нажмите на стену для голосового ввода или на число для ручного ввода"></canvas>
         <figcaption class="plan-tip">Коснитесь стены и назовите размер</figcaption>
       </figure>
 
-      <div class="object-tools" aria-label="Добавить объект">
-        <button id="roomDoorButton" class="tool-button secondary" type="button"><span aria-hidden="true">▯</span>Дверь</button>
-        <button id="roomWindowButton" class="tool-button secondary" type="button"><span aria-hidden="true">═</span>Окно</button>
-        <button id="saveRoomButton" class="tool-button primary" type="button"><span aria-hidden="true">→</span>Продолжить</button>
-      </div>
     </section>
     <section id="openingsScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
