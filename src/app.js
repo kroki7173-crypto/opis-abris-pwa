@@ -133,6 +133,9 @@ let openingPlacementActive = false;
 // the distance from the corner -> a door or passage asks the wall thickness and then opens the room behind it.
 // { step: "kind", wallIndex } | { step: "side", id, side } | { step: "thickness", id }
 let openingStep = null;
+// Which corner each opening was measured from ({ id: "start" | "end" }): the list shows the distance from that one.
+// Kept in the draft on the phone only; the measurement file does not carry it.
+let openingAnchors = {};
 const OPENING_DEFAULT_WIDTH = { door: 0.8, window: 1.3, passage: 0.9 };
 const OPENING_GENITIVE = { door: "двери", window: "окна", passage: "проёма" };
 // A new opening is centred on its wall until the technician types or dictates a distance.
@@ -678,6 +681,7 @@ function draftValue() {
     screen: currentScreen,
     workScreen,
     confirmedPlan,
+    openingAnchors,
     package: packageData,
     currentRoomIndex,
     pendingAdjacent,
@@ -769,6 +773,7 @@ function restoreForm(draft) {
   entrance = restoreEntrance(draft?.entrance);
   workScreen = WORK_SCREENS.includes(draft?.workScreen) ? draft.workScreen : null;
   confirmedPlan = typeof draft?.confirmedPlan === "string" ? draft.confirmedPlan : null;
+  openingAnchors = draft?.openingAnchors && typeof draft.openingAnchors === "object" ? { ...draft.openingAnchors } : {};
   activeRoomWall = entrance.step === "thickness" ? null
     : entrance.step === "anchor" ? null : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
@@ -1751,10 +1756,11 @@ function renderOpenings() {
     const thickness = opening.wall_thickness_m > 0
       ? ` · стена ${formatLength(opening.wall_thickness_m)} м`
       : " · толщина не указана";
-    // The distance is shown from the nearer corner of the wall: that is the one the technician measured from.
+    // The distance is shown from the corner the technician tapped and measured from (Bolat, 05.10.2026);
+    // openings from before that choice was kept count from the nearer corner.
     const wallIndex = Math.max(openingWallIndex(room, opening), 0);
     const fromEnd = room.walls[wallIndex].length_m - opening.offset_m - opening.width_m;
-    const nearEnd = fromEnd < opening.offset_m - 1e-9;
+    const nearEnd = openingAnchors[opening.id] ? openingAnchors[opening.id] === "end" : fromEnd < opening.offset_m - 1e-9;
     const corner = cornerName(nearEnd ? (wallIndex + 1) % room.walls.length : wallIndex);
     text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${corner} ${formatLength(nearEnd ? fromEnd : opening.offset_m)} м${thickness}`;
     const actions = document.createElement("div");
@@ -2484,6 +2490,7 @@ function currentDraftFromRecord(record) {
     // Opens where the work stopped; a finished plan opens as finished.
     workScreen: record.workScreen ?? "openings",
     confirmedPlan: record.confirmedPlan ?? null,
+    openingAnchors: record.openingAnchors ?? {},
     form: record.form ?? {},
   };
 }
@@ -2848,6 +2855,7 @@ elements.startButton.addEventListener("click", async () => {
     elements.roomName.value = "Прихожая";
     entrance = newEntrance();
     confirmedPlan = null;
+    openingAnchors = {};
     elements.doorAnchor.value = "";
     activeRoomWall = 0;
     currentRoomIndex = 0;
@@ -2894,6 +2902,7 @@ async function saveFirstRoom(room) {
     });
     const door = packageData.rooms[0].openings.at(-1);
     if (entrance.thickness) packageData = setOpeningWallThickness(packageData, 0, door.id, entrance.thickness);
+    openingAnchors = { [door.id]: entrance.side ?? "start" };
   }
   showScreen("openings");
   await persist();
@@ -3299,6 +3308,7 @@ elements.openingOffset.addEventListener("change", () => {
     return;
   }
   clearError();
+  openingAnchors[opening.id] = openingStep.side;
   finishOpeningPlacement(opening.id);
 });
 window.addEventListener("beforeinstallprompt", (event) => {
