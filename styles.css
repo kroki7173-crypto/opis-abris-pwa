@@ -320,7 +320,7 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 #adjacentStatus { margin: 0.55rem 0 0; font-size: 0.82rem; }
 #adjacentAnchorPanel { margin-top: 0.55rem; }
 #adjacentAnchorPanel .lead { font-size: 0.84rem; }
-.adjacent-stage canvas.overview-inset { position: absolute; z-index: 3; top: 0.65rem; left: 0.65rem; width: 10.5rem; height: 7rem; min-height: 0; border: 1px solid var(--nav-border); border-radius: 0.55rem; background: var(--field); box-shadow: 0 0.3rem 0.9rem rgba(16, 35, 58, 0.14); pointer-events: none; }
+.plan-stage canvas.overview-inset { position: absolute; z-index: 3; top: 0.65rem; left: 0.65rem; width: 10.5rem; height: 7rem; min-height: 0; border: 1px solid var(--nav-border); border-radius: 0.55rem; background: var(--field); box-shadow: 0 0.3rem 0.9rem rgba(16, 35, 58, 0.14); pointer-events: none; }
 .final-plan-stage canvas { height: clamp(18rem, 44dvh, 30rem); touch-action: pan-y; }
 .validation-panel { margin-top: 0.65rem; padding: 0.8rem 0.9rem; border: 1px solid var(--border); border-radius: 0.75rem; line-height: 1.4; }
 .validation-panel.ready { color: var(--busy); border-color: color-mix(in srgb, var(--busy) 55%, var(--border)); background: var(--busy-bg); }

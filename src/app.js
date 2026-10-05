@@ -47,7 +47,7 @@ const ids = [
   "adjacentShapeButton", "adjacentShapeNote",
   "address", "roomName", "firstLength", "secondLength", "wallThickness", "startButton", "rememberAddressButton", "addressNewButton",
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
-  "openingCanvas", "openingWall", "openingOffset",
+  "openingCanvas", "openingOverviewCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
   "openingEditPanel", "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText",
@@ -1281,7 +1281,8 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
     const room = pkg.rooms[roomIndex];
     const transformed = roomPointsValue.map(transform);
     canvas.roomShapes.push({ index: roomIndex, points: transformed });
-    context.fillStyle = surface;
+    // The room the technician is in is filled in the selection colour on the small plan in the corner.
+    context.fillStyle = canvas.highlightRoom === roomIndex ? uiColor("--select-bg", "#cfe0f5") : surface;
     context.strokeStyle = measured;
     context.lineWidth = 7;
     context.beginPath();
@@ -1975,6 +1976,13 @@ function renderOpenings() {
 
   if (openingStep?.id && !stepOpening()) openingStep = null;
   const guided = stepOpening();
+  // With more than one room, the small plan in the corner shows where this room is; the drawing keeps clear of it.
+  elements.openingOverviewCanvas.hidden = packageData.rooms.length < 2;
+  if (!elements.openingOverviewCanvas.hidden) {
+    elements.openingOverviewCanvas.highlightRoom = currentRoomIndex;
+    drawPlan(elements.openingOverviewCanvas, packageData);
+  }
+  elements.openingCanvas.topReserve = reserveUnder(elements.openingCanvas, elements.openingOverviewCanvas);
   cancelAnimationFrame(openingPulseFrame);
   const draw = () => {
     if (openingStep?.step === "kind" || guided) {
@@ -2625,6 +2633,8 @@ function renderAdjacent() {
     // The anchor prompt already explains a missing door binding; a shape problem needs its own words.
     if (shaped && bindingComplete) shapeProblem = error instanceof Error ? error.message : String(error);
   }
+  // The new room is the highlighted one on the small plan.
+  elements.adjacentOverviewCanvas.highlightRoom = overview ? overview.rooms.length - 1 : null;
   drawPlan(elements.adjacentOverviewCanvas, overview ?? packageData);
   let canvasRoom = preview;
   if (shaped) {
