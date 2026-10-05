@@ -42,6 +42,11 @@
     </div>
     </div>
 
+    <aside id="hintCard" class="hint-card" role="note" aria-live="polite" hidden>
+      <span class="hint-badge" aria-hidden="true">?</span>
+      <p id="hintText"></p>
+    </aside>
+
     <section id="startScreen" class="card screen" data-mode="new" hidden>
       <div id="newObjectBlock">
         <p class="step-label">Шаг 1</p>
@@ -282,6 +287,7 @@
       <h2>Настройки</h2>
       <div class="setting-row"><span>Тёмная тема</span><input id="darkThemeSetting" type="checkbox" aria-label="Тёмная тема"></div>
       <div class="setting-row"><span>Показывать кнопку темы вверху</span><input id="showThemeControl" type="checkbox"></div>
+      <div class="setting-row"><span>Подсказки на каждом шаге</span><input id="hintsSetting" type="checkbox" aria-label="Подсказки на каждом шаге"></div>
     </section>
 
     <section id="helpScreen" class="card screen" hidden>

@@ -81,19 +81,71 @@ function formatted(value) {
   return String(Math.round(value * 1000) / 1000).replace(".", ",");
 }
 
-export function spokenMeasurement(transcript) {
-  const raw = String(transcript ?? "").trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е");
-  if (!raw) throw new Error("Голосовой ввод ничего не распознал.");
+// Number words grouped into numbers: "двенадцать пятьдесят пять" -> [12, 55], "пять тридцать" -> [5, 30].
+function numberGroups(tokens) {
+  const groups = [];
+  let last = null;
+  for (const token of tokens) {
+    if (FILLER_WORDS.has(token)) continue;
+    if (/^\d+$/u.test(token)) {
+      groups.push(Number(token));
+      last = null;
+      continue;
+    }
+    if (!NUMBERS.has(token)) return null;
+    const value = NUMBERS.get(token);
+    if (last !== null && groups.length && continuesWord(last, value)) groups[groups.length - 1] += value;
+    else groups.push(value);
+    last = value;
+  }
+  return groups;
+}
+function continuesWord(previous, next) {
+  if (previous >= 100 && previous % 100 === 0) return next < 100;
+  if (previous >= 20 && previous < 100 && previous % 10 === 0) return next > 0 && next < 10;
+  return false;
+}
 
+// A number said alone, read the way technicians speak (Bolat, 05.10.2026). Lengths are "метры, сантиметры":
+// a small number is metres, a glued "пять три" (53) is 5,3, a glued "пять тридцать" (530) is 5,30 and
+// "двенадцать пятьдесят пять" (1255) is 12,55. Wall thickness and door width are said in centimetres: "сорок" = 0,40.
+function bareNumber(value, kind) {
+  if (kind === "thickness" || kind === "width") return value >= 10 ? value / 100 : value / 10;
+  if (value <= 30) return value;
+  if (value < 100) return value / 10;
+  return Math.floor(value / 100) + (value % 100) / 100;
+}
+
+// Voice field modes that are numbers, and how a bare number is read in each.
+export const MEASUREMENT_KINDS = { measurement: "length", thickness: "thickness", width: "width" };
+
+// Longest wall accepted from the voice: anything longer is a misheard number and is asked again.
+const MAX_SPOKEN_LENGTH_M = 30;
+
+export function spokenMeasurement(transcript, kind = "length") {
+  const raw = String(transcript ?? "").trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е")
+    // iPhone writes "пять тридцать" as a time: "5:30".
+    .replace(/(\d)\s*:\s*(\d)/gu, "$1 $2");
+  if (!raw) throw new Error("Голосовой ввод ничего не распознал.");
+  const value = measuredValue(raw, kind, transcript);
+  if (kind === "length" && value > MAX_SPOKEN_LENGTH_M) {
+    throw new Error(`Похоже, расслышано неверно: «${transcript}». Повторите размер.`);
+  }
+  return formatted(value);
+}
+
+function measuredValue(raw, kind, transcript) {
   const direct = raw.match(/^\s*(\d+(?:[.,]\d+)?)\s*(м|метр(?:а|ов)?|см|сантиметр(?:а|ов)?)?\s*$/u);
   if (direct) {
     const value = Number(direct[1].replace(",", "."));
-    return formatted(CENTIMETER_WORDS.has(direct[2]) ? value / 100 : value);
+    if (CENTIMETER_WORDS.has(direct[2])) return value / 100;
+    if (direct[2] || /[.,]/u.test(direct[1])) return value;
+    return bareNumber(value, kind);
   }
   const numericPair = raw.match(/^\s*(\d+)\s+(\d{1,2})\s*$/u);
   if (numericPair) {
     const fraction = numericPair[2].padEnd(2, "0");
-    return formatted(Number(numericPair[1]) + Number(fraction) / 100);
+    return Number(numericPair[1]) + Number(fraction) / 100;
   }
 
   const tokens = normalizedTokens(raw);
@@ -103,14 +155,14 @@ export function spokenMeasurement(transcript) {
     const meters = partNumber(tokens.slice(0, meterIndex)) ?? 0;
     const end = centimeterIndex > meterIndex ? centimeterIndex : tokens.length;
     const rest = tokens.slice(meterIndex + 1, end);
-    if (rest.includes("половиной")) return formatted(meters + 0.5);
+    if (rest.includes("половиной")) return meters + 0.5;
     const centimeters = partNumber(rest) ?? 0;
-    return formatted(meters + centimeters / 100);
+    return meters + centimeters / 100;
   }
   if (centimeterIndex >= 0) {
     const centimeters = partNumber(tokens.slice(0, centimeterIndex));
     if (centimeters === null) throw new Error("Не удалось распознать число сантиметров.");
-    return formatted(centimeters / 100);
+    return centimeters / 100;
   }
 
   const wholeIndex = tokens.findIndex((token) => WHOLE_WORDS.has(token) || token === "запятая");
@@ -118,22 +170,24 @@ export function spokenMeasurement(transcript) {
     const whole = partNumber(tokens.slice(0, wholeIndex)) ?? 0;
     const fraction = fractionFromTokens(tokens.slice(wholeIndex + 1));
     if (fraction === null) throw new Error("Не удалось распознать дробную часть размера.");
-    return formatted(whole + fraction);
+    return whole + fraction;
   }
   if (tokens.includes("половиной")) {
     const halfIndex = tokens.indexOf("половиной");
     const whole = partNumber(tokens.slice(0, halfIndex).filter((token) => token !== "с"));
     if (whole === null) throw new Error("Не удалось распознать размер с половиной.");
-    return formatted(whole + 0.5);
+    return whole + 0.5;
   }
   if (tokens[0] && ONES.has(tokens[0]) && tokens.length > 1) {
     const whole = ONES.get(tokens[0]);
     const fraction = fractionFromTokens(tokens.slice(1));
-    if (fraction !== null) return formatted(whole + fraction);
+    if (fraction !== null) return whole + fraction;
   }
-  const value = partNumber(tokens);
-  if (value === null) throw new Error(`Не удалось понять размер: «${transcript}».`);
-  return formatted(value);
+  // Two numbers are metres and centimetres: "двенадцать пятьдесят пять" = 12,55, "двенадцать семь" = 12,7.
+  const groups = numberGroups(tokens);
+  if (groups?.length === 2 && groups[1] < 100) return groups[0] + groups[1] / (groups[1] < 10 ? 10 : 100);
+  if (groups?.length === 1) return bareNumber(groups[0], kind);
+  throw new Error(`Не удалось понять размер: «${transcript}».`);
 }
 
 // Address markers as the desktop writes them (validation.normalize_address): marker, space, number.
@@ -348,7 +402,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
         settled = true;
         close();
         try {
-          const value = mode === "measurement" ? spokenMeasurement(transcript)
+          const value = MEASUREMENT_KINDS[mode] ? spokenMeasurement(transcript, MEASUREMENT_KINDS[mode])
             : mode === "address" ? spokenAddress(transcript, addressLessons) : transcript;
           onValue(value, transcript);
           onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
