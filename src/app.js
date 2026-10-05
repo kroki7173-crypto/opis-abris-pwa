@@ -12,8 +12,10 @@ import {
   createRectangleRoom,
   cornerName,
   fileNameFor,
+  inferPartitionThickness,
   interiorPoints,
   isPolygonRoom,
+  planProblems,
   removeInteriorFromPackage,
   removeOpeningFromPackage,
   roomPoints,
@@ -1312,6 +1314,26 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
     }
 
   });
+  // Places the app does not understand: a red numbered mark, the same number as in the list under the plan.
+  // One fixed red with white digits reads in both themes.
+  // The canvas is in device pixels: the mark is sized in screen points so it reads on a phone.
+  const px = canvas.clientWidth ? canvas.width / canvas.clientWidth : 1;
+  (canvas.problemPoints ?? []).forEach((point, index) => {
+    if (!point) return;
+    const [x, y] = transform(point);
+    context.beginPath();
+    context.arc(x, y, 14 * px, 0, Math.PI * 2);
+    context.fillStyle = "#d93025";
+    context.fill();
+    context.lineWidth = 2.5 * px;
+    context.strokeStyle = field;
+    context.stroke();
+    context.fillStyle = "#ffffff";
+    context.font = `bold ${Math.round(16 * px)}px system-ui, sans-serif`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(String(index + 1), x, y + 1);
+  });
 }
 const ROOM_TIPS = {
   wall: "Шаг 2. Вход всегда снизу. Нажмите на мигающую красную стену — включится микрофон — и назовите её длину.",
@@ -1847,8 +1869,8 @@ function openingPiece(canvas, room, opening, side) {
     : { offset_m: opening.offset_m + opening.width_m, width_m: Math.max(0, length - opening.offset_m - opening.width_m) };
   return canvasWallSegment(canvas, room, wallIndex, piece);
 }
-// Windows are in outer walls: they take the outer wall thickness named at the entrance and ask nothing.
-// (A wall's own thickness_m is only the provisional 0,1 until something in it was measured.)
+// Windows are in outer walls: they take the perimeter thickness named at the entrance and ask nothing
+// (Bolat, 05.10.2026). Only doors and passages ask: partitions are 0,1 or 0,15-0,25, each its own.
 function outerWallThickness(room) {
   const entrance = packageData?.rooms?.[0]?.openings?.[0];
   return entrance?.wall_thickness_m > 0 ? entrance.wall_thickness_m : room.wall_thickness_m;
@@ -2714,6 +2736,45 @@ function renderAdjacent() {
   draw();
   syncHint();
 }
+const OPENING_OF = { door: "двери", window: "окна", passage: "проёма" };
+const BEHIND_OPENING = { door: "дверью", passage: "проёмом" };
+// What the app does not understand for the final plan, in words of the technician, each with its place
+// on the plan and the screen where it is fixed (Bolat, 05.10.2026).
+function problemIssue(pkg, problem) {
+  const name = (index) => `«${pkg.rooms[index]?.name ?? `Помещение ${index + 1}`}»`;
+  const opening = pkg.rooms[problem.roomIndex]?.openings?.find((item) => item.id === problem.openingId);
+  const room = { type: "room", roomIndex: problem.roomIndex };
+  switch (problem.kind) {
+    case "no_door":
+      return {
+        text: problem.roomIndex === 0
+          ? "Нет входной двери: коснитесь стены, где она."
+          : `${name(problem.roomIndex)}: нет двери — непонятно, как в неё войти. Коснитесь стены, где дверь.`,
+        action: room,
+      };
+    case "no_thickness":
+      return { text: `${name(problem.roomIndex)}: не названа толщина стены у ${OPENING_OF[opening?.kind] ?? "проёма"}.`, action: room };
+    case "door_leads_nowhere":
+      return {
+        text: `${name(problem.roomIndex)}: за ${BEHIND_OPENING[opening?.kind] ?? "дверью"} ничего не обмерено — непонятно, что там. Обмерьте комнату за ней.`,
+        action: { type: "door", roomIndex: problem.roomIndex, openingId: problem.openingId },
+      };
+    case "door_missing_behind":
+      return {
+        text: `${name(problem.roomIndex)}: из ${name(problem.fromRoomIndex)} сюда ведёт дверь, а здесь её нет. Поставьте её на этой стене.`,
+        action: room,
+      };
+    case "rooms_overlap":
+      return { text: `${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} налезают друг на друга. Проверьте их размеры.`, action: room };
+    case "thin_wall":
+      return {
+        text: `Стена между ${name(problem.otherRoomIndex)} и ${name(problem.roomIndex)} получается ${Math.max(0, Math.round(problem.gap_m * 100))} см — так не бывает. Проверьте размеры комнат.`,
+        action: room,
+      };
+    default:
+      return { text: "Непонятное место на плане.", action: room };
+  }
+}
 function validationIssues(pkg) {
   const issues = [];
   try {
@@ -2721,26 +2782,9 @@ function validationIssues(pkg) {
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
     issues.push({ text, action: /^Адрес/.test(text) ? { type: "address" } : null });
+    return issues;
   }
-  for (const [roomIndex, room] of (pkg?.rooms ?? []).entries()) {
-    // A room nobody can enter is not a finished survey: a bare rectangle must never be called ready.
-    if (!(room.openings ?? []).some((opening) => opening.kind === "door" || opening.kind === "passage")) {
-      issues.push({
-        text: roomIndex === 0
-          ? "Нет входной двери: коснитесь стены, где она."
-          : `Помещение ${roomIndex + 1}: нет двери.`,
-        action: { type: "room", roomIndex },
-      });
-    }
-    for (const opening of room.openings ?? []) {
-      if (!(opening.wall_thickness_m > 0)) {
-        issues.push({
-          text: `Помещение ${roomIndex + 1}: не указана толщина стены у ${{ door: "двери", window: "окна", passage: "проёма" }[opening.kind] ?? "проёма"}.`,
-          action: { type: "room", roomIndex },
-        });
-      }
-    }
-  }
+  for (const problem of planProblems(pkg)) issues.push({ ...problemIssue(pkg, problem), point: problem.point });
   const seen = new Set();
   return issues.filter((issue) => !seen.has(issue.text) && seen.add(issue.text));
 }
@@ -2756,6 +2800,8 @@ function followIssue(action) {
     currentRoomIndex = action.roomIndex;
     clearOpeningEdit();
     showScreen("openings");
+  } else if (action.type === "door") {
+    goThroughOpening(action.roomIndex, action.openingId);
   }
 }
 function renderSummary() {
@@ -2766,25 +2812,28 @@ function renderSummary() {
   // (Bolat, 05.10.2026); passing by the plan on the way is not the end of the survey.
   const finished = issues.length === 0 && confirmedPlan === planSignature(packageData);
   elements.planCanvas.planReady = finished;
+  // Every place the app does not understand is numbered on the whole plan, the same number as in the list.
+  elements.planCanvas.problemPoints = issues.map((issue) => issue.point ?? null);
   drawPlan(elements.planCanvas, packageData, planView);
   elements.validationPanel.hidden = !issues.length && !finished;
   elements.validationPanel.classList.toggle("ready", issues.length === 0);
   elements.validationPanel.classList.toggle("needs-work", issues.length > 0);
   elements.validationTitle.textContent = issues.length
-    ? `Нужно уточнить: ${issues.length}`
+    ? `Непонятно для плана: ${issues.length}. Места отмечены на плане номерами.`
     : "Отличная работа! План готов без замечаний.";
   elements.validationList.replaceChildren();
-  for (const issue of issues) {
+  for (const [index, issue] of issues.entries()) {
     const item = document.createElement("li");
+    const number = issue.point ? `${index + 1}. ` : "";
     if (issue.action) {
       const link = document.createElement("button");
       link.type = "button";
       link.className = "issue-link";
-      link.textContent = issue.text + " Исправить →";
+      link.textContent = number + issue.text + " Исправить →";
       link.addEventListener("click", () => followIssue(issue.action));
       item.append(link);
     } else {
-      item.textContent = issue.text;
+      item.textContent = number + issue.text;
     }
     elements.validationList.append(item);
   }
@@ -2954,7 +3003,7 @@ async function sharePackage() {
   try {
     clearError();
     validatePackage(packageData);
-    const json = JSON.stringify(packageData, null, 2);
+    const json = JSON.stringify(inferPartitionThickness(packageData), null, 2);
     const blob = new Blob([json], { type: "application/json" });
     await deliverFile(
       blob,
@@ -3394,16 +3443,12 @@ elements.addInteriorButton.addEventListener("click", async () => {
 elements.finishButton.addEventListener("click", async () => {
   try {
     clearOpeningEdit();
-    const missingThickness = packageData.rooms.some((room) => latestOpeningWithoutThickness(room));
-    if (missingThickness) throw new Error("Укажите толщину стены для каждого проёма.");
-    validatePackage(packageData);
-    // "Закончить замер" sits under every room and is easy to press after the first one: ask once
-    // (option 1 proposed to Bolat, 05.10.2026; a single-room survey still ends in one confirmation).
-    const rooms = packageData.rooms.length;
-    if (!confirm(`Все комнаты обмерены?\n\nНа плане комнат: ${rooms}. Замер будет отмечен готовым.`)) return;
+    // The app itself decides whether it understands the whole plan (Bolat, 05.10.2026): no question to the
+    // technician. Partitions take the gap between rooms; a door with nothing behind it, a missing door on the
+    // other side, a wall thinner than 5 cm are numbered on the whole plan, each with what is unclear.
+    try { packageData = inferPartitionThickness(packageData); } catch { /* shown in the list below */ }
     pendingAdjacent = null;
-    // The technician's word that the survey is finished.
-    confirmedPlan = planSignature(packageData);
+    confirmedPlan = validationIssues(packageData).length ? null : planSignature(packageData);
     showScreen("done");
     await persist();
   } catch (error) {

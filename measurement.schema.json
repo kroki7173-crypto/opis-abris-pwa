@@ -25,6 +25,7 @@
         "id": { "$ref": "#/$defs/id" },
         "length_m": { "type": "number", "exclusiveMinimum": 0, "maximum": 10000 },
         "angle_deg": { "type": "number", "minimum": -360, "maximum": 360 },
+        "thickness_m": { "type": "number", "minimum": 0.01, "maximum": 2, "description": "Own thickness of a partition; absent means the room's wall_thickness_m (the perimeter)." },
         "source": { "enum": ["measured", "inferred_opposite", "confirmed_inferred", "inherited_shared"] }
       }
     },
@@ -37,6 +38,7 @@
         "wall_id": { "$ref": "#/$defs/id" },
         "offset_m": { "type": "number", "minimum": 0, "maximum": 10000 },
         "width_m": { "type": "number", "minimum": 0.05, "maximum": 10000 },
+        "wall_thickness_m": { "type": "number", "minimum": 0.01, "maximum": 2 },
         "reverse": { "type": "boolean" }
       }
     },

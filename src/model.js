@@ -265,7 +265,6 @@ export function createRectangleRoom({
       id: identifier("wall"),
       length_m: length,
       angle_deg: ((baseAngleDeg + index * 90 + 360) % 360),
-      thickness_m: thickness,
       source: sources[index],
     })),
     openings: [],
@@ -433,7 +432,6 @@ export function createPolygonRoom({
       id: identifier("wall"),
       length_m: wall.length_m,
       angle_deg: wall.angle_deg,
-      thickness_m: thickness,
       source: wall.source,
     })),
     openings: [],
@@ -766,15 +764,41 @@ export function setOpeningWallThickness(pkg, roomIndex, openingId, thicknessM) {
   const nextRoom = next.rooms[roomIndex];
   const nextOpening = nextRoom.openings.find((item) => item.id === openingId);
   const wall = nextRoom.walls.find((item) => item.id === nextOpening.wall_id);
+  // A wall shared with a measured room carries that room's position: its thickness is fixed.
+  if (connectionsForWall(pkg, roomIndex, wall.id).length && Math.abs(wallThickness(nextRoom, wall) - thickness) > 1e-8) {
+    throw new Error("Толщину стены, за которой уже обмерена комната, изменить нельзя.");
+  }
   nextOpening.wall_thickness_m = thickness;
-  wall.thickness_m = thickness;
-  // One thickness per room, equal across connected rooms (here and on the desktop). A room already connected
-  // keeps it; the opening and its wall still record their own thickness for later per-wall support.
-  const connected = (next.connections ?? []).some((item) => item.room_a_id === nextRoom.id || item.room_b_id === nextRoom.id);
-  if (!connected) nextRoom.wall_thickness_m = thickness;
+  // Per-wall thickness (Bolat, 05.10.2026): the perimeter has one thickness (the room's), partitions their own.
+  if (Math.abs(thickness - nextRoom.wall_thickness_m) > 1e-8) wall.thickness_m = thickness;
+  else delete wall.thickness_m;
   next.updated_at = new Date().toISOString();
   validatePackage(next);
   return next;
+}
+// The perimeter thickness named at the entrance: every room takes it; walls with their own thickness
+// (partitions, shared walls) keep theirs.
+export function setOuterWallThickness(pkg, thicknessM) {
+  const thickness = positiveNumber(thicknessM, "Толщина стены");
+  if (thickness > 2) throw new Error("Толщина стены: допустимо до 2 м.");
+  const next = structuredClone(pkg);
+  next.rooms.forEach((room, roomIndex) => {
+    for (const wall of room.walls) {
+      // A shared wall without its own value would move with the perimeter: pin its present thickness.
+      if (wall.thickness_m === undefined && connectionsForWall(pkg, roomIndex, wall.id).length) {
+        wall.thickness_m = room.wall_thickness_m;
+      }
+      if (wall.thickness_m !== undefined && Math.abs(wall.thickness_m - thickness) <= 1e-8) delete wall.thickness_m;
+    }
+    room.wall_thickness_m = thickness;
+  });
+  next.updated_at = new Date().toISOString();
+  validatePackage(next);
+  return next;
+}
+// The thickness a wall is drawn and joined with: its own, otherwise the room's (the perimeter).
+export function wallThickness(room, wall) {
+  return wall?.thickness_m ?? room.wall_thickness_m;
 }
 export function removeOpeningFromPackage(pkg, roomIndex, openingId) {
   const room = pkg?.rooms?.[roomIndex];
@@ -791,10 +815,6 @@ export function removeOpeningFromPackage(pkg, roomIndex, openingId) {
   next.updated_at = new Date().toISOString();
   validatePackage(next);
   return next;
-}
-
-function parentConnected(pkg, room) {
-  return (pkg.connections ?? []).some((item) => item.room_a_id === room.id || item.room_b_id === room.id);
 }
 
 export function createAdjacentRoom(pkg, {
@@ -872,12 +892,11 @@ export function createAdjacentRoom(pkg, {
   ];
   const winding = signedArea(points) > 0 ? 1 : -1;
   const outward = [winding * unit[1], -winding * unit[0]];
-  // Connected rooms share one wall thickness (validatePackage, desktop Project): a parent already connected
-  // to others keeps its own, and the new room takes it too.
-  const shared = parentConnected(pkg, parent) ? parent.wall_thickness_m : (opening.wall_thickness_m ?? parent.wall_thickness_m);
+  // The new room keeps the perimeter thickness; only the wall it shares is as thick as the door's wall.
+  const shared = wallThickness(parent, wall);
   const placement = {
     name,
-    wallThicknessM: shared,
+    wallThicknessM: parent.wall_thickness_m,
     originM: [
       start[0] + unit[0] * (opening.offset_m + opening.width_m + childOpeningOffset) + outward[0] * shared,
       start[1] + unit[1] * (opening.offset_m + opening.width_m + childOpeningOffset) + outward[1] * shared,
@@ -893,6 +912,7 @@ export function createAdjacentRoom(pkg, {
     })
     : createRectangleRoom({ ...placement, firstLengthM: first, secondLengthM: second });
   if (fullWall) neighbor.walls[0].source = "inherited_shared";
+  if (Math.abs(shared - neighbor.wall_thickness_m) > 1e-8) neighbor.walls[0].thickness_m = shared;
 
   const mirroredIds = new Map();
   const sourceOpenings = fullWall ? wallOpenings(parent, wall.id) : [opening];
@@ -906,7 +926,7 @@ export function createAdjacentRoom(pkg, {
         ? Math.round(Math.max(0, wall.length_m - source.offset_m - source.width_m) * 1e9) / 1e9
         : childOpeningOffset,
       width_m: source.width_m,
-      wall_thickness_m: source.wall_thickness_m ?? opening.wall_thickness_m ?? parent.wall_thickness_m,
+      wall_thickness_m: shared,
       reverse: !Boolean(source.reverse),
     };
     mirroredIds.set(source.id, mirrored.id);
@@ -992,6 +1012,10 @@ export function validatePackage(pkg) {
       if (!["measured", "inferred_opposite", "confirmed_inferred", "inherited_shared"].includes(wall.source)) {
         throw new Error("Неизвестный источник размера стены.");
       }
+      if (wall.thickness_m !== undefined) {
+        const own = positiveNumber(wall.thickness_m, "Толщина стены");
+        if (own > 2) throw new Error("Толщина стены: допустимо до 2 м.");
+      }
     }
     validateRoomShape(room);
     if (!Array.isArray(room.openings) || room.openings.length > 500) {
@@ -1011,10 +1035,6 @@ export function validatePackage(pkg) {
       if (opening.wall_thickness_m !== undefined) {
         const openingThickness = positiveNumber(opening.wall_thickness_m, "Толщина стены проёма");
         if (openingThickness > 2) throw new Error("Толщина стены проёма: допустимо до 2 м.");
-      }
-      if (wall.thickness_m !== undefined) {
-        const wallThickness = positiveNumber(wall.thickness_m, "Толщина стены");
-        if (wallThickness > 2) throw new Error("Толщина стены: допустимо до 2 м.");
       }
       if (!Number.isFinite(offset) || offset < 0 || offset + width > wall.length_m + 1e-9) {
         throw new Error("Проём выходит за границы выбранной стены.");
@@ -1112,14 +1132,16 @@ export function validatePackage(pkg) {
       winding * (end[1] - start[1]) / wallLength,
       -winding * (end[0] - start[0]) / wallLength,
     ];
-    if (Math.abs(a.room.wall_thickness_m - b.room.wall_thickness_m) > 1e-8) {
-      throw new Error("Толщина стены связанных комнат не совпадает.");
+    // The gap between connected rooms is the shared wall's own thickness, the same from both sides.
+    const thickness = wallThickness(a.room, a.room.walls[aWallIndex]);
+    if (Math.abs(thickness - wallThickness(b.room, b.room.walls[bWallIndex])) > 1e-8) {
+      throw new Error("Толщина общей стены связанных комнат не совпадает.");
     }
 
     if (mode === "full_wall") {
       const expected = [
-        [end[0] + outward[0] * a.room.wall_thickness_m, end[1] + outward[1] * a.room.wall_thickness_m],
-        [start[0] + outward[0] * a.room.wall_thickness_m, start[1] + outward[1] * a.room.wall_thickness_m],
+        [end[0] + outward[0] * thickness, end[1] + outward[1] * thickness],
+        [start[0] + outward[0] * thickness, start[1] + outward[1] * thickness],
       ];
       if (distance(expected[0], bPoints[bWallIndex]) > 1e-7 ||
           distance(expected[1], bPoints[bWallIndex + 1]) > 1e-7) {
@@ -1163,12 +1185,12 @@ export function validatePackage(pkg) {
     const childSegment = openingSegment(b.room, bWallIndex, openingB);
     const expectedChild = [
       [
-        parentSegment[1][0] + outward[0] * a.room.wall_thickness_m,
-        parentSegment[1][1] + outward[1] * a.room.wall_thickness_m,
+        parentSegment[1][0] + outward[0] * thickness,
+        parentSegment[1][1] + outward[1] * thickness,
       ],
       [
-        parentSegment[0][0] + outward[0] * a.room.wall_thickness_m,
-        parentSegment[0][1] + outward[1] * a.room.wall_thickness_m,
+        parentSegment[0][0] + outward[0] * thickness,
+        parentSegment[0][1] + outward[1] * thickness,
       ],
     ];
     if (distance(expectedChild[0], childSegment[0]) > 1e-7 ||
@@ -1177,6 +1199,169 @@ export function validatePackage(pkg) {
     }
   }
   return pkg;
+}
+
+// The final plan check (Bolat, 05.10.2026): after "Закончить замер" the app itself decides whether it
+// understands the whole plan, and names every place it does not, with a point to mark on the plan.
+const THIN_WALL_M = 0.05;
+const PARTITION_MAX_M = 0.6;
+const FACING_MIN_M = 0.3;
+
+function roomWalls(room) {
+  const points = roomPoints(room);
+  const winding = signedArea(points.slice(0, -1)) > 0 ? 1 : -1;
+  return room.walls.map((wall, index) => {
+    const start = points[index];
+    const end = points[index + 1];
+    const length = distance(start, end);
+    const unit = [(end[0] - start[0]) / length, (end[1] - start[1]) / length];
+    return { wall, index, start, end, length, unit, outward: [winding * unit[1], -winding * unit[0]] };
+  });
+}
+
+// Walls of two different rooms that look at each other across a partition: antiparallel, overlapping along
+// at least 30 cm, the second within 60 cm in front of the first. gap_m < 0 means the rooms overlap there.
+function facingWalls(pkg) {
+  const walls = pkg.rooms.map(roomWalls);
+  const result = [];
+  for (let first = 0; first < walls.length; first += 1) {
+    for (let second = first + 1; second < walls.length; second += 1) {
+      for (const a of walls[first]) {
+        for (const b of walls[second]) {
+          if (a.unit[0] * b.unit[0] + a.unit[1] * b.unit[1] > -0.999) continue;
+          const gap = (b.start[0] - a.start[0]) * a.outward[0] + (b.start[1] - a.start[1]) * a.outward[1];
+          if (gap < -0.02 || gap > PARTITION_MAX_M) continue;
+          const along = (point) => (point[0] - a.start[0]) * a.unit[0] + (point[1] - a.start[1]) * a.unit[1];
+          const from = Math.max(0, Math.min(along(b.start), along(b.end)));
+          const to = Math.min(a.length, Math.max(along(b.start), along(b.end)));
+          if (to - from < FACING_MIN_M) continue;
+          const middle = (from + to) / 2;
+          result.push({
+            roomA: first, wallA: a.index, roomB: second, wallB: b.index, gap_m: gap, along_m: to - from,
+            lengthA: a.length, lengthB: b.length,
+            point: [
+              a.start[0] + a.unit[0] * middle + a.outward[0] * gap / 2,
+              a.start[1] + a.unit[1] * middle + a.outward[1] * gap / 2,
+            ],
+          });
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function wallConnected(pkg, roomIndex, wallId) {
+  return connectionsForWall(pkg, roomIndex, wallId).length > 0;
+}
+
+// A wall facing a neighbour room that is not joined through it is a partition as thick as the gap between them:
+// the app takes that thickness itself instead of drawing the perimeter thickness through the neighbour.
+export function inferPartitionThickness(pkg) {
+  validatePackage(pkg);
+  const next = structuredClone(pkg);
+  let changed = false;
+  for (const pair of facingWalls(pkg)) {
+    if (pair.gap_m < THIN_WALL_M) continue;
+    const thickness = Math.round(pair.gap_m * 1000) / 1000;
+    for (const [roomIndex, wallIndex, length] of [[pair.roomA, pair.wallA, pair.lengthA], [pair.roomB, pair.wallB, pair.lengthB]]) {
+      // One thickness per wall: a wall that mostly looks outside stays the perimeter even if its end meets a room.
+      if (pair.along_m < length / 2) continue;
+      const room = next.rooms[roomIndex];
+      const wall = room.walls[wallIndex];
+      if (wall.thickness_m !== undefined || wallConnected(pkg, roomIndex, wall.id)) continue;
+      if (Math.abs(thickness - room.wall_thickness_m) <= 1e-8) continue;
+      wall.thickness_m = thickness;
+      changed = true;
+    }
+  }
+  if (!changed) return pkg;
+  next.updated_at = new Date().toISOString();
+  validatePackage(next);
+  return next;
+}
+
+function openingMiddle(room, walls, opening, outwardBy) {
+  const wall = walls.find((item) => item.wall.id === opening.wall_id);
+  const along = opening.offset_m + opening.width_m / 2;
+  return [
+    wall.start[0] + wall.unit[0] * along + wall.outward[0] * outwardBy,
+    wall.start[1] + wall.unit[1] * along + wall.outward[1] * outwardBy,
+  ];
+}
+
+// Places the app does not understand for drawing the final plan. Each has a point on the plan (metres)
+// and the room where it is fixed. The entrance (first opening of the first room) leads outside.
+export function planProblems(pkg) {
+  const problems = [];
+  const walls = pkg.rooms.map(roomWalls);
+  const polygons = pkg.rooms.map(roomPolygon);
+  const centre = (index) => {
+    const points = polygons[index];
+    return [
+      points.reduce((sum, point) => sum + point[0], 0) / points.length,
+      points.reduce((sum, point) => sum + point[1], 0) / points.length,
+    ];
+  };
+  pkg.rooms.forEach((room, roomIndex) => {
+    const doors = room.openings.filter((opening) => opening.kind !== "window");
+    if (!doors.length) {
+      problems.push({ kind: "no_door", roomIndex, point: centre(roomIndex) });
+    }
+    for (const opening of room.openings) {
+      if (!(opening.wall_thickness_m > 0)) {
+        problems.push({ kind: "no_thickness", roomIndex, openingId: opening.id, point: openingMiddle(room, walls[roomIndex], opening, 0) });
+      }
+    }
+    for (const opening of doors) {
+      if (roomIndex === 0 && opening.id === room.openings[0]?.id) continue;
+      if (connectionForOpening(pkg, roomIndex, opening.id)) continue;
+      const wall = room.walls.find((item) => item.id === opening.wall_id);
+      const thickness = wallThickness(room, wall);
+      // Is there a room just behind this door, measured through another door?
+      const behind = [thickness + 0.1, PARTITION_MAX_M + 0.1]
+        .map((by) => openingMiddle(room, walls[roomIndex], opening, by))
+        .map((probe) => polygons.findIndex((polygon, index) => index !== roomIndex && strictlyInside(polygon, probe)))
+        .find((index) => index >= 0);
+      if (behind === undefined) {
+        problems.push({ kind: "door_leads_nowhere", roomIndex, openingId: opening.id, point: openingMiddle(room, walls[roomIndex], opening, 0) });
+        continue;
+      }
+      // The room behind must have the same door in the same place, or its wall would be drawn solid there.
+      const middle = openingMiddle(room, walls[roomIndex], opening, 0);
+      const matched = pkg.rooms[behind].openings.some((other) => {
+        if (other.kind === "window") return false;
+        const otherMiddle = openingMiddle(pkg.rooms[behind], walls[behind], other, 0);
+        return distance(middle, otherMiddle) <= thickness + CLOSURE_LIMIT_M + opening.width_m / 2;
+      });
+      if (!matched) {
+        problems.push({ kind: "door_missing_behind", roomIndex: behind, fromRoomIndex: roomIndex, openingId: opening.id, point: middle });
+      }
+    }
+  });
+  for (let first = 0; first < polygons.length; first += 1) {
+    for (let second = first + 1; second < polygons.length; second += 1) {
+      if (polygonInteriorsOverlap(polygons[first], polygons[second])) {
+        problems.push({ kind: "rooms_overlap", roomIndex: second, otherRoomIndex: first, point: centre(second) });
+      }
+    }
+  }
+  const overlapping = new Set(problems.filter((item) => item.kind === "rooms_overlap")
+    .map((item) => item.otherRoomIndex + ":" + item.roomIndex));
+  for (const pair of facingWalls(pkg)) {
+    if (pair.gap_m >= THIN_WALL_M || overlapping.has(pair.roomA + ":" + pair.roomB)) continue;
+    const a = pkg.rooms[pair.roomA];
+    const b = pkg.rooms[pair.roomB];
+    const wallA = a.walls[pair.wallA].id;
+    const wallB = b.walls[pair.wallB].id;
+    // Two walls joined through a door are exactly the named thickness apart: nothing to understand there.
+    const joined = (pkg.connections ?? []).some((connection) =>
+      (connection.room_a_id === a.id && connection.wall_a_id === wallA && connection.room_b_id === b.id && connection.wall_b_id === wallB) ||
+      (connection.room_a_id === b.id && connection.wall_a_id === wallB && connection.room_b_id === a.id && connection.wall_b_id === wallA));
+    if (joined) continue;
+    problems.push({ kind: "thin_wall", roomIndex: pair.roomB, otherRoomIndex: pair.roomA, gap_m: pair.gap_m, point: pair.point });
+  }
+  return problems;
 }
 
 export function fileNameFor(pkg) {

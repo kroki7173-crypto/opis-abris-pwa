@@ -325,7 +325,7 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .validation-panel { margin-top: 0.65rem; padding: 0.8rem 0.9rem; border: 1px solid var(--border); border-radius: 0.75rem; line-height: 1.4; }
 .validation-panel.ready { color: var(--busy); border-color: color-mix(in srgb, var(--busy) 55%, var(--border)); background: var(--busy-bg); }
 .validation-panel.needs-work { color: var(--nav-text); border-color: var(--nav-border); background: var(--nav-selected); }
-.validation-panel ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.validation-panel ul { margin: 0.4rem 0 0; padding-left: 0; list-style: none; }
 .validation-panel ul:empty { display: none; }
 .final-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; margin-top: 0.55rem; }
 .final-actions button { min-width: 0; }
