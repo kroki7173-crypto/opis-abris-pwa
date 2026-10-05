@@ -1,4 +1,4 @@
-const CACHE = "opis-abris-shell-v35";
+const CACHE = "opis-abris-shell-v36";
 const SHELL = [
   "./",
   "./index.html",
@@ -17,8 +17,12 @@ const SHELL = [
   "./src/zip.js",
 ];
 
+// A new version is downloaded whole into its own cache, past the browser HTTP cache, so one version never
+// mixes with another. The page reloads once when it takes over (see app.js, "controllerchange").
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(
+    SHELL.map((url) => new Request(url, { cache: "reload" })),
+  )));
   self.skipWaiting();
 });
 
@@ -31,21 +35,19 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// Cache first: the app opens from the phone at once, whatever the network does. Waiting for the network on
+// every file left a black screen for half a minute on a poor connection (Bolat, 05.10.2026).
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
-  event.respondWith(
-    // no-cache: revalidate with the server so the browser HTTP cache cannot mix an old page with a new script.
-    fetch(event.request, { cache: "no-cache" }).then((response) => {
-      const copy = response.clone();
-      caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-      return response;
-    }).catch(async () => {
-      const cached = await caches.match(event.request);
-      if (cached) return cached;
-      if (event.request.mode === "navigate") return caches.match("./index.html");
-      throw new Error("Ресурс недоступен офлайн.");
-    }),
-  );
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const cached = await cache.match(event.request, { ignoreSearch: true }) ??
+      (event.request.mode === "navigate" ? await cache.match("./index.html") : undefined);
+    if (cached) return cached;
+    const response = await fetch(event.request);
+    if (response.ok) cache.put(event.request, response.clone());
+    return response;
+  })());
 });

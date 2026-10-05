@@ -3027,11 +3027,13 @@ elements.installButton.addEventListener("click", async () => {
   elements.installButton.hidden = true;
 });
 
+let draftLoaded = false;
 async function start() {
   try {
     const draft = await loadDraft();
     restoreForm(draft);
     packageData = draft?.package ?? null;
+    draftLoaded = true;
     if (keptInCatalog(packageData)) {
       await saveSurvey({ ...draft, version: 4 });
     }
@@ -3053,10 +3055,24 @@ async function start() {
   }
   recordHistory();
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {
+    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).catch(() => {
       setSaveStatus("Офлайн-режим станет доступен после установки приложения");
     });
   }
+}
+// The app runs from the phone's copy; a newer version, once fully downloaded, takes over with one reload.
+// Listened for before anything else, so a version that arrives while the page loads is not missed. The draft is
+// saved first so nothing typed is lost; the very first install (no previous worker) needs no reload.
+if ("serviceWorker" in navigator) {
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading) return;
+    reloading = true;
+    clearTimeout(saveTimer);
+    // Before the draft is loaded there is nothing of this page to save, and saving would overwrite it with empty.
+    (draftLoaded ? persist() : Promise.resolve()).finally(() => window.location.reload());
+  });
 }
 initializeUi();
 installVoiceInputs();
