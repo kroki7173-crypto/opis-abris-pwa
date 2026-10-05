@@ -64,7 +64,7 @@ const ids = [
   "editOpeningsButton", "newButton", "roomCanvas", "planCanvas", "saveStatus",
   "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
-  "wallThicknessButton", "wallThicknessValue", "roomDoorButton", "roomWindowButton",
+  "roomDoorButton", "roomWindowButton",
   "settingsDialog", "settingsClose", "darkThemeSetting", "showThemeControl",
   "helpDialog", "helpClose", "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
@@ -122,6 +122,8 @@ let openingPlacementActive = false;
 let openingOffsetTouched = false;
 let planView = { zoom: 1, x: 0, y: 0 };
 // "Объекты" is highlighted only when the technician asked for the list; the start screen reached otherwise is "Замер".
+// The first room starts with this thickness; the technician names the real one at the first door or window.
+const PROVISIONAL_WALL_THICKNESS = "0,1";
 let objectsNavRequested = false;
 // Tapping the wall opposite an already measured one and giving another size means the room is not a rectangle.
 let roomOppositeTap = null;
@@ -373,10 +375,6 @@ function initializeUi() {
     objectsNavRequested = true;
     showScreen("start");
   });
-  elements.wallThicknessButton.addEventListener("click", () => {
-    selectVoiceTargetById("wallThickness");
-    startContextVoice();
-  });
   elements.roomDoorButton.addEventListener("click", () => {
     openingPlacementActive = true;
     setKind("door");
@@ -564,7 +562,6 @@ function restoreForm(draft) {
   elements.firstLength.value = form.firstLength ?? "";
   elements.secondLength.value = form.secondLength ?? "";
   elements.wallThickness.value = form.wallThickness ?? "";
-  elements.wallThicknessValue.textContent = elements.wallThickness.value || "—";
   elements.openingWall.dataset.wanted = form.openingWall || "0";
   elements.openingWall.value = form.openingWall || "0";
   elements.openingOffset.value = form.openingOffset ?? "0";
@@ -1041,7 +1038,6 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
 }
 function renderRoomInput() {
   const wallsReady = decimal(elements.firstLength.value) > 0 && decimal(elements.secondLength.value) > 0;
-  elements.wallThicknessButton.classList.toggle("needs-value", wallsReady && !(decimal(elements.wallThickness.value) > 0));
   cancelAnimationFrame(roomPulseFrame);
   const draw = () => {
     drawRoom(elements.roomCanvas, previewRoom(), activeRoomWall, true);
@@ -1817,7 +1813,7 @@ function openShape(context) {
     const room = packageData?.rooms?.[0];
     shapeState = room && isPolygonRoom(room) && room.walls.length <= MAX_SHAPE_UI_WALLS
       ? shapeStateFromRoom(room)
-      : { ...newShapeState("first", elements.roomName.value || "Прихожая"), thickness: elements.wallThickness.value };
+      : { ...newShapeState("first", elements.roomName.value || "Прихожая"), thickness: elements.wallThickness.value || PROVISIONAL_WALL_THICKNESS };
   }
   elements.shapeFields.dataset.key = "";
   showScreen("shape");
@@ -2197,8 +2193,7 @@ for (const input of [elements.firstLength, elements.secondLength]) {
 for (const input of [elements.roomName, elements.firstLength, elements.secondLength, elements.wallThickness]) {
   input.addEventListener("input", () => {
     if (input === elements.wallThickness) {
-      elements.wallThicknessValue.textContent = input.value || "—";
-      if (currentScreen === "openings") {
+          if (currentScreen === "openings") {
         const room = packageData?.rooms?.[currentRoomIndex];
         const missing = latestOpeningWithoutThickness(room);
         if (missing && decimal(input.value) > 0) {
@@ -2270,10 +2265,6 @@ elements.startButton.addEventListener("click", async () => {
     showError(error);
   }
 });
-elements.backButton.addEventListener("click", () => {
-  showScreen("start");
-  persist();
-});
 function confirmFirstRoomReplacement() {
   const hasMeasuredWork = packageData.rooms.length > 1 || packageData.rooms[0]?.openings?.length ||
     packageData.rooms[0]?.interiors?.length;
@@ -2299,7 +2290,7 @@ elements.saveRoomButton.addEventListener("click", async () => {
       name: elements.roomName.value,
       firstLengthM: elements.firstLength.value,
       secondLengthM: elements.secondLength.value,
-      wallThicknessM: elements.wallThickness.value,
+      wallThicknessM: elements.wallThickness.value || PROVISIONAL_WALL_THICKNESS,
     }));
   } catch (error) {
     showError(error);
@@ -2453,8 +2444,7 @@ elements.shapeDoneButton.addEventListener("click", async () => {
     });
     elements.roomName.value = room.name;
     elements.wallThickness.value = shapeState.thickness;
-    elements.wallThicknessValue.textContent = shapeState.thickness || "—";
-    await saveFirstRoom(room);
+      await saveFirstRoom(room);
   } catch (error) {
     showError(error);
   }
