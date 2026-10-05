@@ -156,7 +156,29 @@ function continuesNumber(previous, next) {
 
 // "Спартака два квартира сорок один" -> "Спартака д 2 кв 41". Numbers are always digits; a number without a marker
 // is the house, the next one the flat (Bolat, 05.10.2026). Numbers before the street ("8 Марта") stay in the street.
-export function spokenAddress(transcript) {
+export function spokenAddress(transcript, lessons = null) {
+  const { street, tail } = addressParts(transcript);
+  // A street the technician corrected once by hand is replaced the next time it is heard the same way.
+  const learned = lessons?.[streetKey(street)];
+  const parts = [...(learned ? [learned] : street ? [street] : []), ...tail];
+  if (!parts.length) return "";
+  parts[0] = parts[0].charAt(0).toLocaleUpperCase("ru-RU") + parts[0].slice(1);
+  return parts.join(" ");
+}
+
+function streetKey(street) {
+  return String(street ?? "").toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/gu, " ").trim();
+}
+
+// What "Запомнить исправление" stores: how the street was heard and how it is really written.
+export function addressLesson(transcript, corrected) {
+  const key = streetKey(addressParts(transcript).street);
+  const street = addressParts(corrected).street.trim();
+  if (!key || !street || streetKey(street) === key) return null;
+  return { key, street: street.charAt(0).toLocaleUpperCase("ru-RU") + street.slice(1) };
+}
+
+function addressParts(transcript) {
   const words = String(transcript ?? "")
     .replace(/([а-яё])\.?(?=\d)/giu, "$1 ")
     .split(/[\s,;]+/u)
@@ -228,10 +250,7 @@ export function spokenAddress(transcript) {
       tail.push(item.key);
     }
   }
-  const parts = [...street.map((item) => item.text), ...tail];
-  if (!parts.length) return "";
-  parts[0] = parts[0].charAt(0).toLocaleUpperCase("ru-RU") + parts[0].slice(1);
-  return parts.join(" ");
+  return { street: street.map((item) => item.text).join(" "), tail };
 }
 
 function recognitionError(code) {
@@ -287,7 +306,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
     return true;
   }
 
-  async function listen({ mode, onValue, onListening = () => {}, timeoutMs = 8000 }) {
+  async function listen({ mode, onValue, onListening = () => {}, timeoutMs = 8000, addressLessons = null }) {
     stop();
     const { local } = await prepare();
     const recognition = new Recognition();
@@ -322,7 +341,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
         try {
           const transcript = event.results[event.resultIndex][0].transcript.trim();
           const value = mode === "measurement" ? spokenMeasurement(transcript)
-            : mode === "address" ? spokenAddress(transcript) : transcript;
+            : mode === "address" ? spokenAddress(transcript, addressLessons) : transcript;
           onValue(value, transcript);
           onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
           settled = true;

@@ -38,14 +38,14 @@ import {
   surveysForLocalDay,
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
-import { createVoiceController, spokenAddress } from "./voice.js";
+import { addressLesson, createVoiceController, spokenAddress } from "./voice.js";
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
   "shapeBackButton", "shapeFewerButton", "shapeMoreButton", "shapeCount", "shapeCanvas",
   "shapeCaption", "shapeFields", "shapeStatus", "shapeDoneButton", "shapeResetButton", "shapeMirrorButton",
   "adjacentShapeButton", "adjacentShapeNote",
-  "address", "roomName", "firstLength", "secondLength", "wallThickness", "startButton",
+  "address", "roomName", "firstLength", "secondLength", "wallThickness", "startButton", "rememberAddressButton", "addressNewButton",
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
   "openingCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
@@ -122,10 +122,10 @@ let openingPlacementActive = false;
 // A new opening is centred on its wall until the technician types or dictates a distance.
 let openingOffsetTouched = false;
 let planView = { zoom: 1, x: 0, y: 0 };
-// "Объекты" is highlighted only when the technician asked for the list; the start screen reached otherwise is "Замер".
+// "Объекты" is highlighted only when the technician asked for the list; the start screen reached otherwise is "Главная".
 // The first room starts with this thickness; the technician names the real one at the first door or window.
 const PROVISIONAL_WALL_THICKNESS = "0,1";
-// The start screen has two faces: "new" (address entry, tab "Замер") and "list" (saved objects, tab "Объекты").
+// The start screen has two faces: "new" (address entry, tab "Главная") and "list" (saved objects, tab "Объекты").
 let startMode = "new";
 // First-room guide: the entrance door comes first (wall -> distance to the next wall -> wall thickness), then the walls.
 const ENTRANCE_WIDTH_M = 0.8;
@@ -243,6 +243,7 @@ async function startContextVoice() {
     await voiceController.listen({
       mode,
       timeoutMs: 8000,
+      addressLessons: mode === "address" ? addressLessons() : null,
       onListening(listening) {
         voiceListening = listening;
         elements.contextMicButton.disabled = listening;
@@ -254,8 +255,12 @@ async function startContextVoice() {
           elements.voiceTarget.textContent = `Слушаю: ${label}`;
         }
       },
-      onValue(value) {
+      onValue(value, transcript) {
         input.value = value;
+        if (input === elements.address) {
+          // Remembered so a hand correction of what was heard can be learned ("Запомнить исправление").
+          addressDictation = { transcript, value };
+        }
         input.dispatchEvent(new Event("input", { bubbles: true }));
         input.dispatchEvent(new Event("change", { bubbles: true }));
         if (input.dataset.shapeKey) advanceShapeTarget();
@@ -302,6 +307,44 @@ function installVoiceInputs() {
   elements.contextMicButton.disabled = !capability.available;
   elements.contextMicButton.title = capability.available ? "Включить микрофон" : capability.reason;
   refreshVoiceTarget();
+}
+
+// Street names the technician corrected after dictation: heard street -> written street. Only streets, no house
+// or flat numbers, and they never leave the phone.
+const ADDRESS_LESSONS_KEY = "opis-pwa-address-lessons";
+let addressDictation = null;
+function addressLessons() {
+  try { return JSON.parse(localStorage.getItem(ADDRESS_LESSONS_KEY) ?? "{}") ?? {}; } catch { return {}; }
+}
+function rememberAddressCorrection() {
+  const lesson = addressDictation ? addressLesson(addressDictation.transcript, elements.address.value) : null;
+  elements.rememberAddressButton.hidden = true;
+  if (!lesson) return;
+  const lessons = addressLessons();
+  lessons[lesson.key] = lesson.street;
+  storeValue(ADDRESS_LESSONS_KEY, JSON.stringify(lessons));
+  addressDictation = null;
+  setVoiceStatus(`Запомнил: «${lesson.key}» — это «${lesson.street}».`);
+}
+function syncRememberAddress() {
+  const changed = addressDictation && elements.address.value.trim() !== addressDictation.value.trim();
+  elements.rememberAddressButton.hidden = !(changed && addressLesson(addressDictation.transcript, elements.address.value));
+}
+// Step 1 serves a new object ("Начать") and a change of the current object's address ("Сохранить адрес").
+function editingAddress() {
+  return Boolean(packageData && String(packageData.address ?? "").trim());
+}
+function syncAddressStep() {
+  elements.startButton.textContent = editingAddress() ? "Сохранить адрес" : "Начать";
+  elements.addressNewButton.hidden = !editingAddress();
+  elements.startButton.disabled = !elements.address.value.trim();
+  syncRememberAddress();
+}
+function openAddressStep() {
+  startMode = "new";
+  if (editingAddress()) elements.address.value = packageData.address;
+  showScreen("start");
+  elements.address.focus();
 }
 
 const THEME_KEY = "opis-pwa-theme";
@@ -388,8 +431,20 @@ function initializeUi() {
   elements.undoButton.addEventListener("click", () => moveHistory(-1).catch(showError));
   elements.redoButton.addEventListener("click", () => moveHistory(1).catch(showError));
   elements.measureNavButton.addEventListener("click", () => {
-    showScreen(packageData?.rooms?.length ? "done" : packageData ? "room" : "start");
-    if (!packageData && !elements.address.value.trim()) elements.address.focus();
+    // The main tab always begins with step 1 (the address) until there is an object to measure.
+    if (!editingAddress()) {
+      openAddressStep();
+      return;
+    }
+    showScreen(packageData.rooms?.length ? "done" : "room");
+  });
+  elements.headerTitle.addEventListener("click", () => {
+    if (currentScreen !== "start") openAddressStep();
+  });
+  elements.rememberAddressButton.addEventListener("click", rememberAddressCorrection);
+  elements.addressNewButton.addEventListener("click", () => {
+    addressDictation = null;
+    leaveCurrentForCatalog("").then(() => elements.address.focus()).catch(showError);
   });
   elements.objectsNavButton.addEventListener("click", () => {
     startMode = "list";
@@ -520,7 +575,10 @@ window.addEventListener("resize", () => {
 function showScreen(name) {
   currentScreen = name;
   document.documentElement.dataset.screen = name;
-  if (name === "start") elements.startScreen.dataset.mode = startMode;
+  if (name === "start") {
+    elements.startScreen.dataset.mode = startMode;
+    syncAddressStep();
+  }
   syncHeaderTitle();
   if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
@@ -2197,6 +2255,7 @@ async function renderSurveyCatalog() {
           currentRoomIndex = 0;
           pendingAdjacent = null;
           restoreForm(null);
+          syncHeaderTitle();
         }
         await renderSurveyCatalog();
         setSaveStatus("Сохранённый объект удалён");
@@ -2288,6 +2347,7 @@ async function leaveCurrentForCatalog(message) {
 elements.address.addEventListener("input", () => {
   syncHeaderTitle();
   elements.startButton.disabled = !elements.address.value.trim();
+  syncRememberAddress();
   schedulePersist();
 });
 for (const input of [elements.firstLength, elements.secondLength]) {
@@ -2401,8 +2461,18 @@ elements.startButton.addEventListener("click", async () => {
   try {
     // A typed address gets the same form as a dictated one: "Спартака 2 41" -> "Спартака д 2 кв 41".
     elements.address.value = spokenAddress(elements.address.value) || elements.address.value.trim();
-    // "Начать" always starts a new object: attaching the address to an old address-less draft once showed
-    // someone else's bare rectangle as a finished plan.
+    addressDictation = null;
+    elements.rememberAddressButton.hidden = true;
+    if (editingAddress()) {
+      // "Сохранить адрес": the current object keeps its plan and gets the corrected address.
+      packageData.address = elements.address.value;
+      packageData.updated_at = new Date().toISOString();
+      showScreen(packageData.rooms?.length ? "done" : "room");
+      await persist();
+      return;
+    }
+    // "Начать" starts a new object; an old draft without an address is never reused (it once showed
+    // someone else's bare rectangle as a finished plan).
     packageData = createPackage(elements.address.value);
     // A new object never inherits the previous room's sizes.
     elements.firstLength.value = "";
@@ -2434,8 +2504,7 @@ function confirmFirstRoomReplacement() {
 async function saveFirstRoom(room) {
   packageData.rooms = [room];
   packageData.connections = [];
-  // The address belongs to the object since "Начать"; an emptied start-screen field must not wipe it.
-  packageData.address = elements.address.value.trim() || packageData.address;
+  // The address belongs to the object since "Начать"; only "Сохранить адрес" changes it, never an unsaved field.
   packageData.updated_at = new Date().toISOString();
   currentRoomIndex = 0;
   pendingAdjacent = null;
