@@ -147,10 +147,6 @@ function restoreEntrance(value) {
     thickness: value.thickness ? String(value.thickness) : null,
   };
 }
-// The wall at the start corner of the door wall and the one at its end corner.
-function entranceNeighbour(side) {
-  return side === "start" ? (entrance.wall + 3) % 4 : (entrance.wall + 1) % 4;
-}
 // Offset of the entrance door from the start corner of its wall, or null while it cannot be known.
 function entranceOffset(wallLength) {
   if (entrance.anchor === null || !entrance.side) return null;
@@ -722,7 +718,7 @@ function restoreForm(draft) {
   pendingShape = restoreShapeState(draft?.pendingShape, null);
   entrance = restoreEntrance(draft?.entrance);
   activeRoomWall = entrance.step === "thickness" ? null
-    : entrance.step === "anchor" ? (entrance.side ? entranceNeighbour(entrance.side) : null) : entrance.wall;
+    : entrance.step === "anchor" ? null : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
   setKind(openingKind, false, false);
   setInteriorKind(interiorKind, false);
@@ -1191,13 +1187,23 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
 }
 const ROOM_TIPS = {
   wall: "Нажмите на мигающую стену: здесь входная дверь",
-  anchor: "Нажмите на стену слева или справа от двери и назовите расстояние от неё до двери",
+  anchor: "Нажмите на мигающий кусок стены слева или справа от двери",
   thickness: "Нажмите «Толщина ?» и назовите толщину стены",
   measure: "Нажмите на мигающую стену и назовите её размер",
 };
+// The piece of the door wall between a corner and the door: the door is anchored by its length.
+function entrancePiece(canvas, room, side) {
+  const door = room.openings?.[0];
+  if (!door) return null;
+  const length = room.walls[entrance.wall].length_m;
+  const piece = side === "start"
+    ? { offset_m: 0, width_m: door.offset_m }
+    : { offset_m: door.offset_m + door.width_m, width_m: Math.max(0, length - door.offset_m - door.width_m) };
+  return openingSegment(roomBox(canvas, room), entrance.wall, piece);
+}
 function renderRoomInput() {
   elements.roomTip.textContent = entrance.step === "anchor" && entrance.side
-    ? "Назовите расстояние от мигающей стены до двери" : ROOM_TIPS[entrance.step];
+    ? "Назовите длину мигающего куска: от угла до двери" : ROOM_TIPS[entrance.step];
   if (entrance.step === "thickness") {
     clearTimeout(thicknessChipTimer);
     elements.thicknessChip.textContent = "Толщина ?";
@@ -1207,14 +1213,19 @@ function renderRoomInput() {
     elements.thicknessChip.hidden = true;
   }
   cancelAnimationFrame(roomPulseFrame);
-  // Until a side is chosen, the walls left and right of the door blink in turn: either can anchor it.
-  const choosingSide = entrance.step === "anchor" && !entrance.side;
+  // Anchoring blinks the door wall itself (Bolat, 05.10.2026): its pieces left and right of the door in turn
+  // until one is tapped, then that piece alone. Blinking the side walls read as "measure that wall".
+  const anchoring = entrance.step === "anchor";
   const draw = () => {
-    const wall = choosingSide
-      ? entranceNeighbour(Math.floor(Date.now() / 650) % 2 ? "end" : "start")
-      : activeRoomWall;
-    drawRoom(elements.roomCanvas, previewRoom(), wall, true);
-    if (currentScreen === "room" && wall !== null) roomPulseFrame = requestAnimationFrame(draw);
+    const room = previewRoom();
+    const wall = anchoring ? null : activeRoomWall;
+    drawRoom(elements.roomCanvas, room, wall, true);
+    if (anchoring) {
+      const side = entrance.side ?? (Math.floor(Date.now() / 650) % 2 ? "end" : "start");
+      const piece = entrancePiece(elements.roomCanvas, room, side);
+      if (piece) strokeWallSegment(elements.roomCanvas.getContext("2d"), piece, true);
+    }
+    if (currentScreen === "room" && (anchoring || wall !== null)) roomPulseFrame = requestAnimationFrame(draw);
   };
   draw();
 }
@@ -2626,7 +2637,7 @@ async function saveRoomFromForm() {
       // The measured door position did not fit: ask for the distance again.
       entrance.step = "anchor";
       entrance.anchor = null;
-      activeRoomWall = entrance.side ? entranceNeighbour(entrance.side) : null;
+      activeRoomWall = null;
       renderRoomInput();
     }
   }
@@ -2857,18 +2868,21 @@ elements.roomCanvas.addEventListener("click", (event) => {
     return;
   }
   if (entrance.step === "anchor") {
-    const side = wallIndex === entranceNeighbour("start") ? "start" : wallIndex === entranceNeighbour("end") ? "end" : null;
     if (wallIndex === entrance.wall) {
+      // The piece of the door wall the tap fell on (left or right of the door) is the one measured:
+      // from its corner to the near edge of the door.
+      const along = [x - box.left, box.bottom - y, box.right - x, y - box.top][wallIndex] / box.scale;
+      const door = room.openings?.[0];
+      entrance.side = door && along > door.offset_m + door.width_m / 2 ? "end" : "start";
+      selectVoiceTargetById("doorAnchor");
+      startContextVoice();
+    } else {
+      // Another wall: the door moves there, starting again from choosing its wall.
       entrance.step = "wall";
       entrance.side = null;
       entrance.anchor = null;
+      entrance.wall = wallIndex;
       activeRoomWall = wallIndex;
-    } else if (side) {
-      // The technician picks the side: the distance is measured from this wall to the near edge of the door.
-      entrance.side = side;
-      activeRoomWall = wallIndex;
-      selectVoiceTargetById("doorAnchor");
-      startContextVoice();
     }
     renderRoomInput();
     schedulePersist();
