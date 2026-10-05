@@ -155,16 +155,18 @@
       <figure class="preview plan-stage interior-stage">
         <canvas id="interiorCanvas" width="720" height="560"
                 aria-label="План комнаты с кладовыми, колоннами и проёмами в перекрытии"></canvas>
-        <figcaption class="plan-tip">Отступы считаются от начала выбранной стены</figcaption>
+        <button id="interiorAskChip" class="thickness-chip" type="button" hidden></button>
+        <figcaption class="plan-tip">Нажмите внутрь комнаты, где кладовка, колонна или проём</figcaption>
       </figure>
 
       <div class="type-tabs compact-tabs interior-types" role="group" aria-label="Тип внутреннего объекта">
-        <button type="button" data-interior-kind="storage" class="type active">Кладовка</button>
+        <button type="button" data-interior-kind="storage" class="type">Кладовка</button>
         <button type="button" data-interior-kind="column" class="type">Колонна</button>
-        <button type="button" data-interior-kind="void" class="type">Проём</button>
+        <button type="button" data-interior-kind="void" class="type">Проём в полу</button>
       </div>
 
-      <div class="interior-form">
+      <!-- Values of the guided steps; the form itself is not shown (minimal buttons, Bolat 05.10.2026). -->
+      <div class="interior-form canvas-data-inputs">
         <label for="interiorWall">Базовая стена
           <select id="interiorWall">
             <option value="0">Стена 1</option><option value="1">Стена 2</option>
@@ -187,12 +189,12 @@
           </label>
         </div>
       </div>
-      <div class="interior-edit-actions">
-        <button id="addInteriorButton" class="primary wide" type="button">Добавить на план</button>
+      <div class="interior-edit-actions" hidden>
+        <button id="addInteriorButton" class="primary wide" type="button" hidden>Добавить на план</button>
         <button id="interiorCancelEditButton" class="quiet wide" type="button" hidden>Отменить правку</button>
       </div>
       <div id="interiorList" class="opening-list"></div>
-      <button id="interiorDoneButton" class="secondary wide" type="button">Готово</button>
+      <button id="interiorDoneButton" class="secondary wide" type="button" hidden>Готово</button>
     </section>
     <section id="adjacentScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">

@@ -364,7 +364,7 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 /* The room hint lives in the card; the small caption under the drawing would repeat it. */
 #roomTip { display: none; }
 :root[data-hint="on"] #roomScreen .plan-stage canvas { height: max(12rem, calc(100dvh - 18.6rem - env(safe-area-inset-top) - env(safe-area-inset-bottom))); }
-:root[data-hint="on"] #openingsScreen .plan-tip, :root[data-hint="on"] #doneScreen .plan-tip { display: none; }
+:root[data-hint="on"] #openingsScreen .plan-tip, :root[data-hint="on"] #doneScreen .plan-tip, :root[data-hint="on"] #interiorScreen .plan-tip { display: none; }
 /* Under the next-room drawing only a binding warning is shown; the step itself is in the hint. */
 #adjacentScreen .plan-tip:has(#adjacentBindingHint[hidden]) { display: none; }
 /* "Что в этой стене?": the three kind buttons pulse until one is chosen. */

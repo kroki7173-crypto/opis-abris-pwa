@@ -61,7 +61,7 @@ const ids = [
   "adjacentAnchorCorner", "adjacentAnchorOffset",
   "adjacentAnchorCornerButton", "adjacentAnchorCornerValue", "adjacentAnchorOffsetButton", "adjacentAnchorOffsetValue",
   "adjacentBackButton", "createAdjacentButton", "shareButton", "editButton",
-  "newSurveyButton", "newButton", "doorAnchor", "thicknessChip", "roomTip", "roomCanvas", "planCanvas", "saveStatus",
+  "newSurveyButton", "newButton", "doorAnchor", "thicknessChip", "interiorAskChip", "roomTip", "roomCanvas", "planCanvas", "saveStatus",
   "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
 
@@ -127,6 +127,7 @@ let historyRestoring = false;
 let roomPulseFrame = null;
 let openingPulseFrame = null;
 let adjacentPulseFrame = null;
+let interiorPulseFrame = null;
 let openingPlacementActive = false;
 // Doors and windows go the same way as the entrance (Bolat, 05.10.2026): tap the wall -> say what is in it
 // (door, window, passage) -> it appears in the middle -> the wall pieces beside it blink in turn -> tap one and name
@@ -618,26 +619,43 @@ function installPlanGestures() {
 
 // A canvas keeps its drawing width but takes the aspect ratio of the box CSS gives it, so nothing is stretched.
 function syncCanvasSizes() {
+  let changed = false;
   for (const canvas of document.querySelectorAll(".plan-stage canvas:not(.overview-inset)")) {
     const box = canvas.getBoundingClientRect();
     if (!box.width || !box.height) continue;
     const height = Math.round(canvas.width * box.height / box.width);
-    if (Math.abs(height - canvas.height) > 1) canvas.height = height;
+    if (Math.abs(height - canvas.height) > 1) {
+      canvas.height = height;
+      changed = true;
+    }
   }
+  return changed;
 }
-window.addEventListener("resize", () => {
-  syncCanvasSizes();
+function rerenderScreen() {
   const renderers = {
     room: renderRoomInput, openings: renderOpenings, interior: renderInteriors,
     adjacent: renderAdjacent, shape: renderShape, done: renderSummary,
   };
   try { renderers[currentScreen]?.(); } catch (error) { showError(error); }
+}
+window.addEventListener("resize", () => {
+  syncCanvasSizes();
+  rerenderScreen();
 });
+// The size of a drawing is measured again once the screen has settled (the hint card, toasts and fonts can change
+// it after the first measurement); a squeezed drawing is redrawn at its real proportions.
+function resyncCanvasesSoon() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (syncCanvasSizes()) rerenderScreen();
+  }));
+}
 function showScreen(name) {
   currentScreen = name;
   if (WORK_SCREENS.includes(name)) workScreen = name;
   // Another room or screen of the survey ends a half-placed opening; tabs like "Объекты" keep it.
   if (WORK_SCREENS.includes(name) && name !== "openings") openingStep = null;
+  if (WORK_SCREENS.includes(name) && name !== "interior") interiorStep = null;
+  if (name !== "interior") cancelAnimationFrame(interiorPulseFrame);
   document.documentElement.dataset.screen = name;
   if (name === "start") {
     elements.startScreen.dataset.mode = startMode;
@@ -672,6 +690,7 @@ function showScreen(name) {
   for (const key of ["measure", "objects", "settings", "help"]) elements[key + "NavButton"].classList.toggle("active", tab === key);
   syncHint();
   refreshVoiceTarget();
+  resyncCanvasesSoon();
 }
 // An object belongs in "Объекты" from "Начать" on, before anything is measured (Bolat, 05.10.2026): the list is
 // where it is found again, opened or deleted.
@@ -823,6 +842,15 @@ function previewRoom() {
   }
   return room;
 }
+// Canvas y below a button floating over the drawing (plus room for a wall length label), so that the corner and
+// wall it asks about are never hidden under it; 0 while the button is hidden.
+function reserveUnder(canvas, element) {
+  if (!element || element.hidden) return 0;
+  const canvasBox = canvas.getBoundingClientRect();
+  const box = element.getBoundingClientRect();
+  if (!canvasBox.height || !box.height) return 0;
+  return (box.bottom - canvasBox.top) * canvas.height / canvasBox.height + 46;
+}
 // Vertical room for a drawing: a canvas may keep its top free (`topReserve`, e.g. under the plan overview).
 function drawingBand(canvas, margin) {
   const top = Math.max(margin, canvas.topReserve ?? 0);
@@ -902,6 +930,17 @@ function drawInteriorSymbol(context, points, interior) {
   context.fill();
   context.stroke();
   context.setLineDash([]);
+  if (interior.kind === "storage") {
+    // The storage door, drawn like any door in the middle of its side: a tap on another side moves it there.
+    const side = interior.door_wall ?? 2;
+    const [a, b] = [points[side], points[(side + 1) % 4]];
+    const sideMeters = (side % 2 === 0 ? interior.width_m : interior.depth_m) + 2 * interior.partition_m;
+    const share = Math.min(0.9, interior.door_width_m / sideMeters) / 2;
+    const middle = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const half = [(b[0] - a[0]) * share, (b[1] - a[1]) * share];
+    drawOpeningSymbol(context, [middle[0] - half[0], middle[1] - half[1], middle[0] + half[0], middle[1] + half[1]],
+      { kind: "door" }, uiColor("--field", "#ffffff"));
+  }
   const center = [
     points.reduce((sum, point) => sum + point[0], 0) / points.length,
     points.reduce((sum, point) => sum + point[1], 0) / points.length,
@@ -998,8 +1037,12 @@ function tapIsInsideRoom(canvas, room, x, y) {
   for (let index = 0; index < outline.length; index += 1) {
     nearest = Math.min(nearest, distanceToCanvasSegment(x, y, outline[index], outline[(index + 1) % outline.length]));
   }
-  // Walls get a wide touch zone; only a tap well inside the room counts as "inside".
-  return nearest > canvas.width * 0.14;
+  // Walls get a wide touch zone; only a tap well inside the room counts as "inside". On a small drawing the zone
+  // shrinks so that the middle of the room always stays tappable.
+  const xs = outline.map((point) => point[0]);
+  const ys = outline.map((point) => point[1]);
+  const smallerSide = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  return nearest > Math.min(canvas.width * 0.14, smallerSide * 0.25);
 }
 
 function nearestWallIndex(canvas, room, x, y) {
@@ -1302,6 +1345,25 @@ function hintText() {
     }
     return "Есть ещё двери или окна? Нажмите на стену, где они есть. Через новую дверь откроется следующая комната.";
   }
+  if (currentScreen === "interior") {
+    const current = stepInterior();
+    if (interiorStep?.step === "kind") return "Что здесь? Нажмите под рисунком: кладовка, колонна или проём в полу.";
+    if (current) {
+      const room = packageData.rooms[currentRoomIndex];
+      const corner = cornerName(Math.max(room.walls.findIndex((wall) => wall.id === current.wall_id), 0));
+      const of = INTERIOR_GENITIVE[current.kind];
+      const inside = current.kind === "storage" ? " внутри" : "";
+      const ask = {
+        offset: `Мигает угол ${corner} — от него меряем (меряли от другого — нажмите на тот угол). Назовите расстояние от угла до ${of} вдоль мигающей стены.`,
+        inset: `Назовите расстояние от угла ${corner} до ${of} вдоль второй мигающей стены.`,
+        width: `Назовите ширину ${of}${inside}.`,
+        depth: `Назовите глубину ${of}${inside}.`,
+        partition: "Назовите толщину перегородки кладовки.",
+      }[interiorStep.step];
+      return `${ask} Микрофон — красная кнопка или касание рисунка.`;
+    }
+    return "Нажмите внутрь комнаты, где кладовка, колонна или проём в полу. Дверь кладовки переносится касанием её стороны.";
+  }
   if (currentScreen === "adjacent") {
     if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
       return "Стена с дверью другой длины. Нажмите «До двери» и назовите расстояние от угла до двери.";
@@ -1344,6 +1406,7 @@ function renderRoomInput() {
   } else if (!elements.thicknessChip.classList.contains("done")) {
     elements.thicknessChip.hidden = true;
   }
+  elements.roomCanvas.topReserve = reserveUnder(elements.roomCanvas, elements.thicknessChip);
   cancelAnimationFrame(roomPulseFrame);
   // Anchoring blinks the door wall itself (Bolat, 05.10.2026): its pieces left and right of the door in turn
   // until one is tapped, then that piece alone. Blinking the side walls read as "measure that wall".
@@ -1508,38 +1571,231 @@ function beginInteriorEdit(interior) {
   elements.interiorCanvas.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+// Built-in rooms, columns and floor openings by steps (Bolat's decision of 02–03.10.2026, guided like the doors
+// on 05.10.2026): tap inside the room -> what is it -> the corner it is measured from blinks (another corner: tap it)
+// -> distance from the corner along one wall, then along the other -> inside width and depth -> the partition of a
+// storage. A tap on a side of a storage moves its door there.
+// { step: "kind", tap: [x, y] } | { step: "offset" | "inset" | "width" | "depth" | "partition", id }
+let interiorStep = null;
+const INTERIOR_DEFAULT_SIZE = { storage: 1.2, column: 0.4, void: 1 };
+const INTERIOR_GENITIVE = { storage: "кладовки", column: "колонны", void: "проёма" };
+const INTERIOR_STEPS = ["offset", "inset", "width", "depth", "partition"];
+const INTERIOR_FIELDS = { offset: "interiorOffset", inset: "interiorInset", width: "interiorWidth", depth: "interiorDepth", partition: "interiorPartition" };
+const INTERIOR_KEYS = { offset: "offsetM", inset: "insetM", width: "widthM", depth: "depthM", partition: "partitionM" };
+
+// Along-the-wall and into-the-room directions at the start corner of a wall, as interiorPoints() uses them.
+function interiorFrame(room, wallIndex) {
+  const points = roomPoints(room);
+  const start = points[wallIndex];
+  const end = points[wallIndex + 1];
+  const length = Math.hypot(end[0] - start[0], end[1] - start[1]) || 1;
+  const unit = [(end[0] - start[0]) / length, (end[1] - start[1]) / length];
+  const area = points.slice(0, -1).reduce((sum, point, index, all) => {
+    const next = all[(index + 1) % all.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0);
+  const direction = area > 0 ? 1 : -1;
+  return { corner: start, unit, inward: [-unit[1] * direction, unit[0] * direction] };
+}
+// Room point <-> canvas point for whichever way the room is drawn.
+function canvasMap(canvas, room) {
+  if (drawsOnPlan(room)) {
+    const box = polygonBox(canvas, room);
+    return { to: (point) => roomPointToCanvas(room, box, point), from: (x, y) => [(x - box.left) / box.scale, (box.bottom - y) / box.scale] };
+  }
+  const box = roomBox(canvas, room);
+  const frame = interiorFrame(room, 0);
+  return {
+    to: (point) => roomPointToCanvas(room, box, point),
+    from: (x, y) => {
+      const along = (x - box.left) / box.scale;
+      const inward = (box.bottom - y) / box.scale;
+      return [frame.corner[0] + frame.unit[0] * along + frame.inward[0] * inward, frame.corner[1] + frame.unit[1] * along + frame.inward[1] * inward];
+    },
+  };
+}
+function stepInterior() {
+  if (!interiorStep?.id) return null;
+  return packageData?.rooms?.[currentRoomIndex]?.interiors?.find((item) => item.id === interiorStep.id) ?? null;
+}
+function interiorValues(room, interior) {
+  return {
+    kind: interior.kind,
+    wallIndex: room.walls.findIndex((wall) => wall.id === interior.wall_id),
+    offsetM: interior.offset_m, insetM: interior.inset_m, widthM: interior.width_m, depthM: interior.depth_m,
+    partitionM: interior.partition_m ?? 0.1, doorWidthM: interior.door_width_m ?? 0.8, doorWall: interior.door_wall ?? 2,
+    name: interior.name ?? "Кладовка",
+  };
+}
+// The door of a storage stays at least 5 cm from its corners when the storage gets smaller.
+function fitStorageDoor(values) {
+  if (values.kind !== "storage") return values;
+  const side = values.doorWall % 2 === 0 ? Number(values.widthM) : Number(values.depthM);
+  return { ...values, doorWidthM: Math.max(0.3, Math.min(0.8, Math.round((side - 0.1) * 100) / 100)) };
+}
+function round2(value) {
+  return Math.round(value * 100) / 100;
+}
+function startInteriorAt(tap) {
+  clearError();
+  interiorStep = { step: "kind", tap };
+  renderInteriors();
+}
+async function chooseInteriorKind(kind) {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room) return;
+  try {
+    if (interiorStep?.step === "kind") {
+      // The corner nearest to the tap is the one it is measured from; another corner can be tapped later.
+      const tap = interiorStep.tap;
+      const corners = roomPoints(room).slice(0, -1);
+      const corner = corners.reduce((best, point, index) => (
+        Math.hypot(point[0] - tap[0], point[1] - tap[1]) < Math.hypot(corners[best][0] - tap[0], corners[best][1] - tap[1]) ? index : best
+      ), 0);
+      const size = INTERIOR_DEFAULT_SIZE[kind];
+      const outer = size + (kind === "storage" ? 0.2 : 0);
+      const frame = interiorFrame(room, corner);
+      const relative = [tap[0] - frame.corner[0], tap[1] - frame.corner[1]];
+      const values = fitStorageDoor({
+        kind, wallIndex: corner,
+        offsetM: round2(Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - outer / 2)),
+        insetM: round2(Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - outer / 2)),
+        widthM: size, depthM: size, partitionM: 0.1, doorWidthM: 0.8, doorWall: 2, name: "Кладовка",
+      });
+      try {
+        packageData = addInteriorToPackage(packageData, currentRoomIndex, values);
+      } catch {
+        // Too close to something: start right at the corner instead; the distances are asked anyway.
+        packageData = addInteriorToPackage(packageData, currentRoomIndex, { ...values, offsetM: 0.3, insetM: 0.3 });
+      }
+      interiorStep = { step: "offset", id: packageData.rooms[currentRoomIndex].interiors.at(-1).id };
+    } else {
+      const interior = stepInterior();
+      if (!interior) return;
+      packageData = updateInteriorInPackage(packageData, currentRoomIndex, interior.id,
+        fitStorageDoor({ ...interiorValues(room, interior), kind }));
+      if (interiorStep.step === "partition" && kind !== "storage") interiorStep = null;
+    }
+    interiorKind = kind;
+    clearError();
+    renderInteriors();
+    await persist();
+  } catch (error) {
+    showError(error);
+  }
+}
+// The same object measured from another corner: its place stays, its distances become relative to that corner.
+function reanchorInterior(room, interior, corner) {
+  const frame = interiorFrame(room, corner);
+  const project = (point) => {
+    const relative = [point[0] - frame.corner[0], point[1] - frame.corner[1]];
+    return [relative[0] * frame.unit[0] + relative[1] * frame.unit[1], relative[0] * frame.inward[0] + relative[1] * frame.inward[1]];
+  };
+  const contour = interiorPoints(room, interior);
+  const projected = contour.map(project);
+  const along = projected.map((point) => point[0]);
+  const inward = projected.map((point) => point[1]);
+  const partition = interior.kind === "storage" ? interior.partition_m : 0;
+  const values = {
+    ...interiorValues(room, interior),
+    wallIndex: corner,
+    offsetM: round2(Math.max(0, Math.min(...along))), insetM: round2(Math.max(0, Math.min(...inward))),
+    widthM: round2(Math.max(...along) - Math.min(...along) - 2 * partition),
+    depthM: round2(Math.max(...inward) - Math.min(...inward) - 2 * partition),
+  };
+  if (interior.kind === "storage") {
+    // The door stays on the same side of the storage.
+    const old = interior.door_wall;
+    const doorMiddle = project([(contour[old][0] + contour[(old + 1) % 4][0]) / 2, (contour[old][1] + contour[(old + 1) % 4][1]) / 2]);
+    const a = values.offsetM;
+    const b = values.insetM;
+    const w = values.widthM + 2 * partition;
+    const d = values.depthM + 2 * partition;
+    const middles = [[a + w / 2, b], [a + w, b + d / 2], [a + w / 2, b + d], [a, b + d / 2]];
+    values.doorWall = middles.reduce((best, point, index) => (
+      Math.hypot(point[0] - doorMiddle[0], point[1] - doorMiddle[1]) < Math.hypot(middles[best][0] - doorMiddle[0], middles[best][1] - doorMiddle[1]) ? index : best
+    ), 0);
+  }
+  return fitStorageDoor(values);
+}
+function startInteriorVoice() {
+  const field = INTERIOR_FIELDS[interiorStep?.step];
+  if (!field) return;
+  selectVoiceTargetById(field);
+  startContextVoice();
+}
+function interiorAskText(room, interior) {
+  const corner = room.walls.findIndex((wall) => wall.id === interior.wall_id);
+  const count = room.walls.length;
+  const a = cornerName(corner);
+  return {
+    offset: `Вдоль стены ${a}–${cornerName((corner + 1) % count)} ?`,
+    inset: `Вдоль стены ${a}–${cornerName((corner + count - 1) % count)} ?`,
+    width: `Ширина ${INTERIOR_GENITIVE[interior.kind]} ?`,
+    depth: `Глубина ${INTERIOR_GENITIVE[interior.kind]} ?`,
+    partition: "Перегородка ?",
+  }[interiorStep.step];
+}
 function renderInteriors() {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
-  const editingInterior = (room.interiors ?? []).find((item) => item.id === editingInteriorId);
-  if (editingInteriorId && !editingInterior) clearInteriorEdit(false);
-  elements.addInteriorButton.textContent = editingInterior ? "Сохранить изменения" : "Добавить на план";
-  elements.interiorCancelEditButton.hidden = !editingInterior;
-  syncWallOptions(elements.interiorWall, room);
-  const wallIndex = Math.min(Math.max(Number(elements.interiorWall.value) || 0, 0), room.walls.length - 1);
-  elements.interiorWall.value = String(wallIndex);
-  elements.storageFields.hidden = interiorKind !== "storage";
-  let preview = room;
-  try {
-    const candidate = createInterior(room, interiorFormValues());
-    preview = structuredClone(room);
-    preview.interiors ??= [];
-    if (editingInteriorId) {
-      preview.interiors = preview.interiors.filter((item) => item.id !== editingInteriorId);
-    }
-    preview.interiors.push(candidate);
-  } catch {
-    // Неполный ввод не мешает показывать уже сохранённые объекты.
+  if (interiorStep?.id && !stepInterior()) interiorStep = null;
+  const current = stepInterior();
+  for (const button of interiorKindButtons) button.classList.toggle("active", button.dataset.interiorKind === current?.kind);
+  interiorKindButtons[0]?.parentElement?.classList.toggle("ask", interiorStep?.step === "kind");
+  elements.interiorAskChip.hidden = !current;
+  if (current) {
+    elements.interiorAskChip.textContent = interiorAskText(room, current);
+    elements.interiorAskChip.classList.remove("done");
   }
-  drawRoom(elements.interiorCanvas, preview);
+  elements.interiorCanvas.topReserve = reserveUnder(elements.interiorCanvas, elements.interiorAskChip);
+  const map = canvasMap(elements.interiorCanvas, room);
+  cancelAnimationFrame(interiorPulseFrame);
+  const draw = () => {
+    drawRoom(elements.interiorCanvas, room);
+    const context = elements.interiorCanvas.getContext("2d");
+    const phase = (Math.sin(Date.now() / 170) + 1) / 2;
+    const dot = (point) => {
+      const [x, y] = map.to(point);
+      context.save();
+      context.fillStyle = "#e5252a";
+      context.shadowColor = "rgba(229, 37, 42, 0.85)";
+      context.shadowBlur = 6 + 14 * phase;
+      context.beginPath();
+      context.arc(x, y, 9 + 5 * phase, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    };
+    const line = (from, to) => strokeWallSegment(context, [...map.to(from), ...map.to(to)], true);
+    if (interiorStep?.step === "kind") dot(interiorStep.tap);
+    if (current) {
+      // The corner it is measured from blinks, and so does the distance or side being asked.
+      const frame = interiorFrame(room, room.walls.findIndex((wall) => wall.id === current.wall_id));
+      const at = (along, inward) => [
+        frame.corner[0] + frame.unit[0] * along + frame.inward[0] * inward,
+        frame.corner[1] + frame.unit[1] * along + frame.inward[1] * inward,
+      ];
+      const contour = interiorPoints(room, current);
+      if (interiorStep.step === "offset") line(at(0, 0), at(Math.max(current.offset_m, 0.12), 0));
+      if (interiorStep.step === "inset") line(at(0, 0), at(0, Math.max(current.inset_m, 0.12)));
+      if (interiorStep.step === "width") line(contour[0], contour[1]);
+      if (interiorStep.step === "depth") line(contour[1], contour[2]);
+      if (interiorStep.step === "partition") contour.forEach((point, index) => line(point, contour[(index + 1) % 4]));
+      dot(frame.corner);
+    }
+    if (currentScreen === "interior" && interiorStep) interiorPulseFrame = requestAnimationFrame(draw);
+  };
+  draw();
+  syncHint();
   elements.interiorList.replaceChildren();
   for (const interior of room.interiors ?? []) {
     const row = document.createElement("div");
     row.className = "opening-row";
     const text = document.createElement("span");
     const title = interior.kind === "storage" ? interior.name : interiorTypeName(interior.kind);
-    const partition = interior.kind === "storage" ? ` · перегородка ${interior.partition_m.toFixed(2)} м` : "";
-    text.textContent = `${title} · ${interior.width_m.toFixed(2)} × ${interior.depth_m.toFixed(2)} м${partition}`;
+    const partition = interior.kind === "storage" ? ` · перегородка ${formatLength(interior.partition_m)} м` : "";
+    const corner = cornerName(Math.max(room.walls.findIndex((wall) => wall.id === interior.wall_id), 0));
+    text.textContent = `${title} ${formatLength(interior.width_m)} × ${formatLength(interior.depth_m)} м · от угла ${corner}: ${formatLength(interior.offset_m)} и ${formatLength(interior.inset_m)} м${partition}`;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger compact";
@@ -1560,7 +1816,11 @@ function renderInteriors() {
     edit.type = "button";
     edit.className = "secondary compact";
     edit.textContent = "Изменить";
-    edit.addEventListener("click", () => beginInteriorEdit(interior));
+    // "Изменить" walks the same steps again, starting from the distance from its corner.
+    edit.addEventListener("click", () => {
+      interiorStep = { step: "offset", id: interior.id };
+      renderInteriors();
+    });
     actions.append(edit, remove);
     row.append(text, actions);
     elements.interiorList.append(row);
@@ -2743,6 +3003,8 @@ elements.doorAnchor.addEventListener("change", () => {
 function hideThicknessChip() {
   clearTimeout(thicknessChipTimer);
   elements.thicknessChip.hidden = true;
+  // The drawing gets back the room the chip took.
+  if (currentScreen === "room") renderRoomInput();
 }
 elements.thicknessChip.addEventListener("click", (event) => {
   event.stopPropagation();
@@ -2847,7 +3109,89 @@ for (const button of kindButtons) button.addEventListener("click", () => {
   setKind(button.dataset.kind);
 });
 for (const button of interiorKindButtons) button.addEventListener("click", () => {
-  setInteriorKind(button.dataset.interiorKind);
+  if (!interiorStep) {
+    showError("Сначала нажмите внутрь комнаты, где это находится.");
+    return;
+  }
+  chooseInteriorKind(button.dataset.interiorKind);
+});
+// A dictated or typed distance or size of the object being placed: apply it and go to the next question.
+for (const [step, field] of Object.entries(INTERIOR_FIELDS)) {
+  elements[field].addEventListener("change", async () => {
+    if (interiorStep?.step !== step) return;
+    const room = packageData?.rooms?.[currentRoomIndex];
+    const interior = stepInterior();
+    if (!room || !interior) return;
+    const value = decimal(elements[field].value);
+    const positive = step === "width" || step === "depth" || step === "partition";
+    if (!Number.isFinite(value) || value < 0 || (positive && !(value > 0)) || !String(elements[field].value).trim()) return;
+    try {
+      packageData = updateInteriorInPackage(packageData, currentRoomIndex, interior.id,
+        fitStorageDoor({ ...interiorValues(room, interior), [INTERIOR_KEYS[step]]: value }));
+    } catch (error) {
+      showError(`${error instanceof Error ? error.message : error} Назовите ещё раз.`);
+      return;
+    }
+    clearError();
+    const next = INTERIOR_STEPS.slice(INTERIOR_STEPS.indexOf(step) + 1)
+      .find((item) => item !== "partition" || interior.kind === "storage");
+    interiorStep = next ? { step: next, id: interior.id } : null;
+    renderInteriors();
+    await persist();
+  });
+}
+elements.interiorAskChip.addEventListener("click", (event) => {
+  event.stopPropagation();
+  startInteriorVoice();
+});
+elements.interiorCanvas.addEventListener("click", async (event) => {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room) return;
+  const bounds = elements.interiorCanvas.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) * elements.interiorCanvas.width / bounds.width;
+  const y = (event.clientY - bounds.top) * elements.interiorCanvas.height / bounds.height;
+  const map = canvasMap(elements.interiorCanvas, room);
+  const corners = roomPoints(room).slice(0, -1).map((point) => map.to(point));
+  const nearCorner = corners.findIndex((point) => Math.hypot(point[0] - x, point[1] - y) < 44);
+  const current = stepInterior();
+  if (current) {
+    const base = room.walls.findIndex((wall) => wall.id === current.wall_id);
+    if (nearCorner >= 0 && nearCorner !== base) {
+      // Measured from another corner: the object stays, the distances are asked from that corner.
+      try {
+        packageData = updateInteriorInPackage(packageData, currentRoomIndex, current.id, reanchorInterior(room, current, nearCorner));
+        interiorStep = { step: "offset", id: current.id };
+        renderInteriors();
+        await persist();
+      } catch (error) {
+        showError(error);
+      }
+      return;
+    }
+    startInteriorVoice();
+    return;
+  }
+  // A tap on a side of a storage moves its door there.
+  const point = map.from(x, y);
+  for (const interior of room.interiors ?? []) {
+    if (interior.kind !== "storage") continue;
+    const contour = interiorPoints(room, interior).map((item) => map.to(item));
+    const side = contour.findIndex((item, index) => distanceToCanvasSegment(x, y, item, contour[(index + 1) % 4]) < 22);
+    if (side >= 0) {
+      if (side !== interior.door_wall) {
+        try {
+          packageData = updateInteriorInPackage(packageData, currentRoomIndex, interior.id,
+            fitStorageDoor({ ...interiorValues(room, interior), doorWall: side }));
+          renderInteriors();
+          await persist();
+        } catch (error) {
+          showError(error);
+        }
+      }
+      return;
+    }
+  }
+  if (nearCorner < 0 && pointInPolygon([x, y], corners)) startInteriorAt(point);
 });
 
 elements.startButton.addEventListener("click", async () => {
@@ -3268,9 +3612,13 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
   if (tapIsInsideRoom(elements.openingCanvas, room, x, y)) {
+    // A tap inside the room: what is there (storage, column, floor opening) is asked at once at that place.
     clearOpeningEdit();
     clearInteriorEdit();
+    openingStep = null;
+    const tap = canvasMap(elements.openingCanvas, room).from(x, y);
     showScreen("interior");
+    startInteriorAt(tap);
     return;
   }
   const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
