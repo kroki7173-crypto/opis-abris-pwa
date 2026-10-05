@@ -136,6 +136,104 @@ export function spokenMeasurement(transcript) {
   return formatted(value);
 }
 
+// Address markers as the desktop writes them (validation.normalize_address): marker, space, number.
+const ADDRESS_MARKERS = new Map([
+  ["дом", "д"], ["дома", "д"], ["д", "д"], ["дэ", "д"],
+  ["квартира", "кв"], ["квартиру", "кв"], ["квартиры", "кв"], ["кв", "кв"], ["ка", "кв"],
+  ["корпус", "к"], ["корпуса", "к"], ["к", "к"],
+  ["строение", "стр"], ["стр", "стр"],
+  ["литера", "лит"], ["литер", "лит"], ["лит", "лит"],
+]);
+// Short markers also occur as words of a street name; they count only right before a number.
+const SHORT_MARKERS = new Set(["д", "дэ", "кв", "ка", "к", "стр", "лит"]);
+const ADDRESS_NUMBER = /^\d+(?:\/\d+)?[а-я]?$/u;
+
+function continuesNumber(previous, next) {
+  if (previous >= 100 && previous % 100 === 0) return next < 100;
+  if (previous >= 20 && previous < 100 && previous % 10 === 0) return next > 0 && next < 10;
+  return false;
+}
+
+// "Спартака два квартира сорок один" -> "Спартака д 2 кв 41". Numbers are always digits; a number without a marker
+// is the house, the next one the flat (Bolat, 05.10.2026). Numbers before the street ("8 Марта") stay in the street.
+export function spokenAddress(transcript) {
+  const words = String(transcript ?? "")
+    .replace(/([а-яё])\.?(?=\d)/giu, "$1 ")
+    .split(/[\s,;]+/u)
+    .filter(Boolean);
+  const items = [];
+  for (const word of words) {
+    const key = word.toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\.$/u, "");
+    if (/^\d+$/u.test(key) || NUMBERS.has(key)) {
+      const value = /^\d+$/u.test(key) ? Number(key) : NUMBERS.get(key);
+      const last = items.at(-1);
+      if (last?.type === "number" && last.spoken && NUMBERS.has(key) && continuesNumber(last.last, value)) {
+        last.value += value;
+        last.last = value;
+      } else {
+        items.push({ type: "number", value, last: value, spoken: NUMBERS.has(key), text: word });
+      }
+    } else if (ADDRESS_NUMBER.test(key)) {
+      items.push({ type: "number", text: key });
+    } else if (key === "дробь" || key === "/") {
+      items.push({ type: "slash" });
+    } else if (ADDRESS_MARKERS.has(key)) {
+      items.push({ type: "marker", value: ADDRESS_MARKERS.get(key), short: SHORT_MARKERS.has(key), text: word });
+    } else {
+      items.push({ type: "word", text: word, key });
+    }
+  }
+  for (const [index, item] of items.entries()) {
+    if (item.type === "number" && item.value !== undefined) item.text = String(item.value);
+    // "д" or "к" not followed by a number is part of the street name.
+    if (item.type === "marker" && item.short && items[index + 1]?.type !== "number") {
+      Object.assign(item, { type: "word", key: item.text.toLocaleLowerCase("ru-RU") });
+    }
+  }
+
+  // With an explicit "дом" the street runs up to it ("микрорайон 5 дом 3"); otherwise to the first number or marker
+  // after a word, so leading numbers stay in the street ("8 Марта 5").
+  let index = items.findIndex((item) => item.type === "marker" && item.value === "д");
+  if (index < 0) {
+    const firstWord = items.findIndex((item) => item.type === "word");
+    index = items.findIndex((item, position) => position > firstWord && item.type !== "word");
+    if (firstWord < 0 || index < 0) index = firstWord < 0 ? 0 : items.length;
+  }
+  const street = items.slice(0, index).filter((item) => item.type !== "slash");
+
+  const tail = [];
+  let house = false;
+  let flat = false;
+  let marker = null;
+  let slash = false;
+  for (const item of items.slice(index)) {
+    if (item.type === "marker") {
+      marker = item.value;
+    } else if (item.type === "slash") {
+      slash = tail.length > 0;
+    } else if (item.type === "number") {
+      if (slash) {
+        tail[tail.length - 1] += "/" + item.text;
+        slash = false;
+        continue;
+      }
+      const mark = marker ?? (!house ? "д" : !flat ? "кв" : null);
+      if (mark === "д") house = true;
+      if (mark === "кв") flat = true;
+      if (mark) tail.push(mark);
+      tail.push(item.text);
+      marker = null;
+    } else if (item.key.length === 1 && item.key !== "и" && tail.length) {
+      // A house letter: "17 а".
+      tail.push(item.key);
+    }
+  }
+  const parts = [...street.map((item) => item.text), ...tail];
+  if (!parts.length) return "";
+  parts[0] = parts[0].charAt(0).toLocaleUpperCase("ru-RU") + parts[0].slice(1);
+  return parts.join(" ");
+}
+
 function recognitionError(code) {
   return {
     "not-allowed": "Нет доступа к микрофону. Разрешите его в настройках браузера.",
@@ -223,7 +321,8 @@ export function createVoiceController(scope, onStatus = () => {}) {
         if (settled) return;
         try {
           const transcript = event.results[event.resultIndex][0].transcript.trim();
-          const value = mode === "measurement" ? spokenMeasurement(transcript) : transcript;
+          const value = mode === "measurement" ? spokenMeasurement(transcript)
+            : mode === "address" ? spokenAddress(transcript) : transcript;
           onValue(value, transcript);
           onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
           settled = true;

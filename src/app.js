@@ -38,7 +38,7 @@ import {
   surveysForLocalDay,
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
-import { createVoiceController } from "./voice.js";
+import { createVoiceController, spokenAddress } from "./voice.js";
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
@@ -73,7 +73,7 @@ const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById
 const kindButtons = [...document.querySelectorAll("[data-kind]")];
 const interiorKindButtons = [...document.querySelectorAll("[data-interior-kind]")];
 const VOICE_FIELDS = [
-  ["address", "text", "адрес"],
+  ["address", "address", "адрес"],
   ["roomName", "text", "название комнаты"],
   ["firstLength", "measurement", "размер первой стены"],
   ["secondLength", "measurement", "размер соседней стены"],
@@ -1052,7 +1052,7 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
   const surface = uiColor("--surface", "#f7f8fa");
-  const measured = uiColor("--measured", "#5c7d5f");
+  const measured = canvas.planReady ? uiColor("--measured", "#2f8a45") : uiColor("--muted", "#4a5568");
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = field;
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -2050,6 +2050,15 @@ function renderAdjacent() {
     issues.push({ text, action: /^Адрес/.test(text) ? { type: "address" } : null });
   }
   for (const [roomIndex, room] of (pkg?.rooms ?? []).entries()) {
+    // A room nobody can enter is not a finished survey: a bare rectangle must never be called ready.
+    if (!(room.openings ?? []).some((opening) => opening.kind === "door" || opening.kind === "passage")) {
+      issues.push({
+        text: roomIndex === 0
+          ? "Нет входной двери: коснитесь стены, где она."
+          : `Помещение ${roomIndex + 1}: нет двери.`,
+        action: { type: "room", roomIndex },
+      });
+    }
     for (const opening of room.openings ?? []) {
       if (!(opening.wall_thickness_m > 0)) {
         issues.push({
@@ -2079,8 +2088,10 @@ function followIssue(action) {
 function renderSummary() {
   if (!packageData?.rooms?.length) return;
   elements.summaryAddress.textContent = packageData.address;
-  drawPlan(elements.planCanvas, packageData, planView);
   const issues = validationIssues(packageData);
+  // Green means "all done" (Bolat, 05.10.2026): an unfinished plan is drawn in neutral grey.
+  elements.planCanvas.planReady = issues.length === 0;
+  drawPlan(elements.planCanvas, packageData, planView);
   elements.validationPanel.classList.toggle("ready", issues.length === 0);
   elements.validationPanel.classList.toggle("needs-work", issues.length > 0);
   elements.validationTitle.textContent = issues.length
@@ -2388,13 +2399,10 @@ for (const button of interiorKindButtons) button.addEventListener("click", () =>
 
 elements.startButton.addEventListener("click", async () => {
   try {
-    if (packageData && !String(packageData.address ?? "").trim()) {
-      // An object that lost its address (legacy draft): the address entered here completes it, no new object.
-      packageData.address = elements.address.value.trim();
-      showScreen(packageData.rooms?.length ? "done" : "room");
-      await persist();
-      return;
-    }
+    // A typed address gets the same form as a dictated one: "Спартака 2 41" -> "Спартака д 2 кв 41".
+    elements.address.value = spokenAddress(elements.address.value) || elements.address.value.trim();
+    // "Начать" always starts a new object: attaching the address to an old address-less draft once showed
+    // someone else's bare rectangle as a finished plan.
     packageData = createPackage(elements.address.value);
     // A new object never inherits the previous room's sizes.
     elements.firstLength.value = "";
