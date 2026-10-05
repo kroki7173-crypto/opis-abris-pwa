@@ -768,7 +768,10 @@ export function setOpeningWallThickness(pkg, roomIndex, openingId, thicknessM) {
   const wall = nextRoom.walls.find((item) => item.id === nextOpening.wall_id);
   nextOpening.wall_thickness_m = thickness;
   wall.thickness_m = thickness;
-  nextRoom.wall_thickness_m = thickness;
+  // One thickness per room, equal across connected rooms (here and on the desktop). A room already connected
+  // keeps it; the opening and its wall still record their own thickness for later per-wall support.
+  const connected = (next.connections ?? []).some((item) => item.room_a_id === nextRoom.id || item.room_b_id === nextRoom.id);
+  if (!connected) nextRoom.wall_thickness_m = thickness;
   next.updated_at = new Date().toISOString();
   validatePackage(next);
   return next;
@@ -788,6 +791,10 @@ export function removeOpeningFromPackage(pkg, roomIndex, openingId) {
   next.updated_at = new Date().toISOString();
   validatePackage(next);
   return next;
+}
+
+function parentConnected(pkg, room) {
+  return (pkg.connections ?? []).some((item) => item.room_a_id === room.id || item.room_b_id === room.id);
 }
 
 export function createAdjacentRoom(pkg, {
@@ -865,14 +872,15 @@ export function createAdjacentRoom(pkg, {
   ];
   const winding = signedArea(points) > 0 ? 1 : -1;
   const outward = [winding * unit[1], -winding * unit[0]];
+  // Connected rooms share one wall thickness (validatePackage, desktop Project): a parent already connected
+  // to others keeps its own, and the new room takes it too.
+  const shared = parentConnected(pkg, parent) ? parent.wall_thickness_m : (opening.wall_thickness_m ?? parent.wall_thickness_m);
   const placement = {
     name,
-    wallThicknessM: opening.wall_thickness_m ?? parent.wall_thickness_m,
+    wallThicknessM: shared,
     originM: [
-      start[0] + unit[0] * (opening.offset_m + opening.width_m + childOpeningOffset) +
-        outward[0] * (opening.wall_thickness_m ?? parent.wall_thickness_m),
-      start[1] + unit[1] * (opening.offset_m + opening.width_m + childOpeningOffset) +
-        outward[1] * (opening.wall_thickness_m ?? parent.wall_thickness_m),
+      start[0] + unit[0] * (opening.offset_m + opening.width_m + childOpeningOffset) + outward[0] * shared,
+      start[1] + unit[1] * (opening.offset_m + opening.width_m + childOpeningOffset) + outward[1] * shared,
     ],
     baseAngleDeg: (wall.angle_deg + 180) % 360,
   };
@@ -894,7 +902,8 @@ export function createAdjacentRoom(pkg, {
       kind: source.kind,
       wall_id: neighbor.walls[0].id,
       offset_m: fullWall
-        ? Math.max(0, wall.length_m - source.offset_m - source.width_m)
+        // Rounded past float noise (0.2999999999999996 -> 0.3), far below the 1e-7 tolerance of validation.
+        ? Math.round(Math.max(0, wall.length_m - source.offset_m - source.width_m) * 1e9) / 1e9
         : childOpeningOffset,
       width_m: source.width_m,
       wall_thickness_m: source.wall_thickness_m ?? opening.wall_thickness_m ?? parent.wall_thickness_m,

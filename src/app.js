@@ -2987,8 +2987,12 @@ elements.finishButton.addEventListener("click", async () => {
     const missingThickness = packageData.rooms.some((room) => latestOpeningWithoutThickness(room));
     if (missingThickness) throw new Error("Укажите толщину стены для каждого проёма.");
     validatePackage(packageData);
+    // "Закончить замер" sits under every room and is easy to press after the first one: ask once
+    // (option 1 proposed to Bolat, 05.10.2026; a single-room survey still ends in one confirmation).
+    const rooms = packageData.rooms.length;
+    if (!confirm(`Все комнаты обмерены?\n\nНа плане комнат: ${rooms}. Замер будет отмечен готовым.`)) return;
     pendingAdjacent = null;
-    // "Готово" is the technician's word that the survey is finished.
+    // The technician's word that the survey is finished.
     confirmedPlan = planSignature(packageData);
     showScreen("done");
     await persist();
