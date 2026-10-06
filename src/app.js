@@ -44,7 +44,7 @@ import {
   surveysForLocalDay,
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
-import { addressLesson, createVoiceController, spokenAddress } from "./voice.js";
+import { addressLesson, createVoiceController, spokenAddress, spokenMeasurement } from "./voice.js";
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
@@ -312,15 +312,7 @@ async function startContextVoice() {
         if (input === elements.openingOffset && openingPlacementActive) {
           setTimeout(() => elements.addOpeningButton.click(), 0);
         }
-        if (input === elements.wallThickness && currentScreen === "openings") {
-          const room = packageData?.rooms?.[currentRoomIndex];
-          const missing = [...(room?.openings ?? [])].reverse().find((opening) => !(opening.wall_thickness_m > 0));
-          if (missing) {
-            packageData = setOpeningWallThickness(packageData, currentRoomIndex, missing.id, value);
-            renderOpenings();
-            persist();
-          }
-        }
+        // A thickness on the doors screen is applied by the "change" handler of wallThickness, once.
         if (navigator.vibrate) navigator.vibrate(35);
       },
     });
@@ -3041,6 +3033,9 @@ function currentDraftFromRecord(record) {
     // Opens where the work stopped; a finished plan opens as finished.
     workScreen: record.workScreen ?? "openings",
     confirmedPlan: record.confirmedPlan ?? null,
+    // The remarks of "Закончить замер" and the first-room steps come back with the object, as after a restart.
+    issueBaseline: record.issueBaseline ?? null,
+    entrance: record.entrance ?? null,
     openingAnchors: record.openingAnchors ?? {},
     form: record.form ?? {},
   };
@@ -3306,6 +3301,27 @@ elements.wallThickness.addEventListener("change", () => {
   refreshVoiceTarget();
   schedulePersist();
 });
+// The thickness asked on the doors screen goes to the opening being placed, otherwise to the latest one without it.
+// Applied once the value is complete (dictated, or typed and confirmed), never per keystroke: typing "0,12" set 0,1
+// and walked into the next room before the "2", and typing "12" set a 1 m wall.
+elements.wallThickness.addEventListener("change", () => {
+  if (currentScreen !== "openings" || !(decimal(elements.wallThickness.value) > 0)) return;
+  const room = packageData?.rooms?.[currentRoomIndex];
+  const missing = (openingStep?.step === "thickness" ? stepOpening() : null) ?? latestOpeningWithoutThickness(room);
+  if (!missing) return;
+  try {
+    // Typed the way it is said: "12" is 12 cm, "0,12" stays 0,12.
+    const thickness = spokenMeasurement(elements.wallThickness.value, "thickness");
+    packageData = setOpeningWallThickness(packageData, currentRoomIndex, missing.id, thickness);
+  } catch (error) {
+    showError(`${error instanceof Error ? error.message : error} Назовите ещё раз.`);
+    return;
+  }
+  clearError();
+  renderOpenings();
+  schedulePersist();
+  afterOpeningThickness(missing.id);
+});
 // Both walls known: go straight to doors and windows, no "continue" button.
 for (const input of [elements.firstLength, elements.secondLength]) {
   input.addEventListener("change", () => {
@@ -3315,17 +3331,6 @@ for (const input of [elements.firstLength, elements.secondLength]) {
 }
 for (const input of [elements.roomName, elements.firstLength, elements.secondLength, elements.wallThickness]) {
   input.addEventListener("input", () => {
-    if (input === elements.wallThickness) {
-          if (currentScreen === "openings") {
-        const room = packageData?.rooms?.[currentRoomIndex];
-        const missing = latestOpeningWithoutThickness(room);
-        if (missing && decimal(input.value) > 0) {
-          packageData = setOpeningWallThickness(packageData, currentRoomIndex, missing.id, input.value);
-          renderOpenings();
-          afterOpeningThickness(missing.id);
-        }
-      }
-    }
     if (input === elements.firstLength && decimal(input.value) > 0 && !(decimal(elements.secondLength.value) > 0)) activeRoomWall = 1;
     if (input === elements.secondLength && decimal(input.value) > 0 && !(decimal(elements.firstLength.value) > 0)) activeRoomWall = 0;
     if (decimal(elements.firstLength.value) > 0 && decimal(elements.secondLength.value) > 0) activeRoomWall = null;
@@ -3880,7 +3885,8 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   adjacentOppositeTap = wallIndex === 2 ? { baseline: elements.adjacentFirstLength.value } : null;
   selectVoiceTargetById(wallIndex % 2 === 0 ? "adjacentFirstLength" : "adjacentSecondLength");
   startContextVoice();
-});elements.openingCanvas.addEventListener("click", async (event) => {
+});
+elements.openingCanvas.addEventListener("click", async (event) => {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
   const bounds = elements.openingCanvas.getBoundingClientRect();

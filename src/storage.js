@@ -18,13 +18,18 @@ function transaction(mode, operation) {
   return openDatabase().then((database) => new Promise((resolve, reject) => {
     const tx = database.transaction(STORE, mode);
     const request = operation(tx.objectStore(STORE));
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    tx.oncomplete = () => database.close();
-    tx.onerror = () => {
+    // Settled by the transaction, not the request: a write is on the phone only once it is committed, and an
+    // aborted transaction (e.g. storage full) must not leave the save waiting for ever.
+    tx.oncomplete = () => {
       database.close();
-      reject(tx.error);
+      resolve(request.result);
     };
+    const fail = () => {
+      database.close();
+      reject(tx.error ?? request.error);
+    };
+    tx.onerror = fail;
+    tx.onabort = fail;
   }));
 }
 

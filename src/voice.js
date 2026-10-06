@@ -152,6 +152,8 @@ function measuredValue(raw, kind, transcript) {
   const meterIndex = tokens.findIndex((token) => METER_WORDS.has(token));
   const centimeterIndex = tokens.findIndex((token) => CENTIMETER_WORDS.has(token));
   if (tokens.length === 1 && tokens[0] === "полметра") return 0.5;
+  // A length or width "полтора" said alone is 1,5 m, as "полтора метра" is; no wall is that thick.
+  if (tokens.length === 1 && /^полтор[аы]$/u.test(tokens[0]) && kind !== "thickness") return 1.5;
   if (meterIndex >= 0) {
     // "метр двадцать" is one metre twenty: a metre with no number before it is one metre; "полтора метра" is 1,5.
     const before = tokens.slice(0, meterIndex);
