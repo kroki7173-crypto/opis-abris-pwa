@@ -273,7 +273,8 @@ export function createRectangleRoom({
 }
 
 export const MIN_SHAPE_WALLS = 3;
-export const MAX_SHAPE_WALLS = 24;
+// One limit for the shape screen and the model (README: 3 to 12 walls).
+export const MAX_SHAPE_WALLS = 12;
 export const CLOSURE_GREEN_M = 0.05;
 export const CLOSURE_LIMIT_M = 0.15;
 

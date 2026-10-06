@@ -1,4 +1,4 @@
-import { fileNameFor, inferPartitionThickness, validatePackage } from "./model.js";
+import { fileNameFor, inferPartitionThickness, planProblems, validatePackage } from "./model.js";
 
 function dateValue(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -31,6 +31,19 @@ export function surveysForLocalDay(records, day = new Date()) {
       return false;
     }
   });
+}
+
+// A survey the final check does not understand yet. The day's ZIP still carries it (it is also the backup of the
+// day), but the technician sees which ones go out with remarks.
+export function hasRemarks(record) {
+  const pkg = record?.package;
+  if (!pkg?.rooms?.length) return false;
+  try {
+    validatePackage(pkg);
+    return planProblems(pkg).length > 0;
+  } catch {
+    return true;
+  }
 }
 
 export function archiveEntriesForDay(records, day = new Date()) {

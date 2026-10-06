@@ -40,6 +40,7 @@ import {
 import {
   archiveEntriesForDay,
   archiveFileName,
+  hasRemarks,
   sortSurveyRecords,
   surveysForLocalDay,
 } from "./catalog.js";
@@ -723,6 +724,8 @@ function draftValue() {
     editingOpeningId,
     openingPlacementActive,
     editingInteriorId,
+    openingStep,
+    interiorStep,
     form: {
       address: elements.address.value,
       roomName: elements.roomName.value,
@@ -769,6 +772,25 @@ function schedulePersist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(persist, 180);
 }
+function restoreOpeningStep(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.step === "kind") return Number.isInteger(value.wallIndex) && value.wallIndex >= 0 ? { step: "kind", wallIndex: value.wallIndex } : null;
+  if (!["side", "width", "thickness"].includes(value.step) || typeof value.id !== "string") return null;
+  const step = { step: value.step, id: value.id, editing: value.editing === true };
+  if (value.step !== "thickness") step.side = ["start", "end"].includes(value.side) ? value.side : null;
+  if (value.step === "width") {
+    if (!step.side || !Number.isFinite(value.distance)) return null;
+    step.distance = value.distance;
+  }
+  return step;
+}
+function restoreInteriorStep(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.step === "kind") {
+    return Array.isArray(value.tap) && value.tap.length === 2 && value.tap.every(Number.isFinite) ? { step: "kind", tap: [...value.tap] } : null;
+  }
+  return INTERIOR_STEPS.includes(value.step) && typeof value.id === "string" ? { step: value.step, id: value.id } : null;
+}
 function restoreForm(draft) {
   const form = draft?.form ?? {};
   elements.address.value = form.address ?? draft?.package?.address ?? "";
@@ -810,6 +832,9 @@ function restoreForm(draft) {
   issueBaseline = Array.isArray(draft?.issueBaseline) ? draft.issueBaseline : null;
   returnToIssues = Boolean(draft?.returnToIssues);
   openingAnchors = draft?.openingAnchors && typeof draft.openingAnchors === "object" ? { ...draft.openingAnchors } : {};
+  // A door or storage half placed when the page reloaded continues at the same question.
+  openingStep = restoreOpeningStep(draft?.openingStep);
+  interiorStep = restoreInteriorStep(draft?.interiorStep);
   activeRoomWall = entrance.step === "thickness" ? null
     : entrance.step === "anchor" ? null : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
@@ -843,6 +868,14 @@ function previewRoom() {
     ],
     openings: [],
   };
+  const existing = firstRoomToCorrect();
+  if (existing) {
+    // Correcting a measured room: its own doors and windows stay on the drawing.
+    room.openings = existing.openings.map((opening) => ({
+      ...opening, wall_id: "preview-" + (existing.walls.findIndex((wall) => wall.id === opening.wall_id) + 1),
+    }));
+    return room;
+  }
   if (entrance.step !== "wall") {
     const wall = entrance.wall;
     const length = room.walls[wall].length_m;
@@ -1437,8 +1470,12 @@ function entrancePiece(canvas, room, side) {
   return openingSegment(roomBox(canvas, room), entrance.wall, piece);
 }
 function renderRoomInput() {
-  elements.roomTip.textContent = entrance.step === "anchor" && entrance.side
-    ? "Шаг 3. Назовите расстояние от угла до двери." : ROOM_TIPS[entrance.step];
+  // A measured room never walks the entrance steps again (an old draft may still be in one of them).
+  if (firstRoomToCorrect() && entrance.step !== "measure") entrance = { ...entrance, step: "measure" };
+  elements.roomTip.textContent = firstRoomToCorrect()
+    ? "Нажмите на стену с неверной длиной и назовите её заново — план перестроится. Двери и окна останутся."
+    : entrance.step === "anchor" && entrance.side
+      ? "Шаг 3. Назовите расстояние от угла до двери." : ROOM_TIPS[entrance.step];
   syncHint();
   if (entrance.step === "thickness") {
     clearTimeout(thicknessChipTimer);
@@ -2047,6 +2084,7 @@ function renderOpenings() {
     : room;
 
   if (openingStep?.id && !stepOpening()) openingStep = null;
+  if (openingStep?.step === "kind" && !room.walls[openingStep.wallIndex]) openingStep = null;
   const guided = stepOpening();
   // With more than one room, the small plan in the corner shows where this room is; the drawing keeps clear of it.
   elements.openingOverviewCanvas.hidden = packageData.rooms.length < 2;
@@ -2171,7 +2209,6 @@ function renderOpenings() {
     actions.append(remove);
   }
 }
-const MAX_SHAPE_UI_WALLS = Math.min(12, MAX_SHAPE_WALLS);
 // The technician picks the corner from this set; "other" lets them type degrees.
 const ANGLE_PRESETS = [
   ["90", "90° — обычный"], ["270", "270° — выступ внутрь"], ["135", "135°"], ["45", "45°"],
@@ -2189,7 +2226,7 @@ function newShapeState(context = "first", name = "") {
 }
 function restoreShapeState(value, fallback) {
   const valid = value && typeof value === "object" && Number.isInteger(value.count) &&
-    value.count >= 3 && value.count <= MAX_SHAPE_UI_WALLS && Array.isArray(value.walls) &&
+    value.count >= 3 && value.count <= MAX_SHAPE_WALLS && Array.isArray(value.walls) &&
     Array.isArray(value.angles);
   if (!valid) return fallback;
   return {
@@ -2552,7 +2589,7 @@ function renderShape() {
   const count = shapeState.count;
   elements.shapeCount.textContent = String(count);
   elements.shapeFewerButton.disabled = count <= 3;
-  elements.shapeMoreButton.disabled = count >= MAX_SHAPE_UI_WALLS;
+  elements.shapeMoreButton.disabled = count >= MAX_SHAPE_WALLS;
   elements.shapeResetButton.hidden = !(shapeState.context === "adjacent" && pendingShape);
   elements.shapeCaption.textContent = "Коснитесь стены и назовите размер · обход " +
     (shapeState.clockwise ? "по часовой стрелке" : "против часовой стрелки");
@@ -2602,7 +2639,7 @@ function openShape(context) {
       : newShapeState("adjacent", elements.adjacentName.value);
   } else {
     const room = packageData?.rooms?.[0];
-    shapeState = room && isPolygonRoom(room) && room.walls.length <= MAX_SHAPE_UI_WALLS
+    shapeState = room && isPolygonRoom(room) && room.walls.length <= MAX_SHAPE_WALLS
       ? shapeStateFromRoom(room)
       : { ...newShapeState("first", elements.roomName.value || "Прихожая"), thickness: elements.wallThickness.value || PROVISIONAL_WALL_THICKNESS };
   }
@@ -2840,11 +2877,39 @@ function followIssue(action) {
 }
 // A number in a remark is said again on the spot (Bolat, 06.10.2026): the microphone opens on it, and the
 // whole plan is rebuilt for the new value.
+// A corrected wall keeps every opening's distance from the start corner of its wall. An opening the technician
+// measured from the other corner (`openingAnchors` "end") keeps that distance instead: the plan still says what was
+// measured ("окно 0,50 от угла D" stays 0,50 after the wall is made longer).
+function keepEndAnchors(before, after) {
+  let next = after;
+  after.rooms.forEach((room, roomIndex) => {
+    const old = before.rooms.find((item) => item.id === room.id);
+    if (!old) return;
+    for (const opening of room.openings) {
+      if (openingAnchors[opening.id] !== "end") continue;
+      const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
+      const oldWall = old.walls.find((wall) => wall.id === opening.wall_id);
+      const oldOpening = old.openings.find((item) => item.id === opening.id);
+      const length = room.walls[wallIndex]?.length_m;
+      if (!oldWall || !oldOpening || Math.abs(length - oldWall.length_m) < 1e-9) continue;
+      const fromEnd = oldWall.length_m - oldOpening.offset_m - oldOpening.width_m;
+      const offset = Math.round((length - fromEnd - opening.width_m) * 1000) / 1000;
+      try {
+        next = updateOpeningInPackage(next, roomIndex, opening.id, {
+          kind: opening.kind, wallIndex, offsetM: String(offset), widthM: String(opening.width_m),
+        });
+      } catch {
+        // It no longer fits from that corner: it stays where the corrected wall put it.
+      }
+    }
+  });
+  return next;
+}
 async function applyFix(fix, raw) {
   const value = decimal(raw);
   if (!(value > 0)) return;
   try {
-    packageData = fix.type === "wall" ? setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value))
+    packageData = fix.type === "wall" ? keepEndAnchors(packageData, setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value)))
       : fix.type === "height" ? setCeilingHeight(packageData, String(value))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
@@ -3086,7 +3151,8 @@ async function renderSurveyCatalog() {
     title.textContent = record.package.address;
     const details = document.createElement("span");
     details.textContent = recordDate(record) + (record.package.rooms.length
-      ? " · комнат: " + record.package.rooms.length : " · замер не начат");
+      ? " · комнат: " + record.package.rooms.length : " · замер не начат") +
+      (hasRemarks(record) ? " · есть замечания" : "");
     text.append(title, details);
 
     const actions = document.createElement("div");
@@ -3123,10 +3189,11 @@ async function renderSurveyCatalog() {
     elements.surveyList.append(row);
   }
 
-  const todayCount = surveysForLocalDay(records).length;
-  elements.shareTodayButton.disabled = todayCount === 0;
-  elements.shareTodayButton.textContent = todayCount
-    ? `Поделиться за сегодня: ${todayCount} (ZIP)`
+  const today = surveysForLocalDay(records);
+  const unfinished = today.filter(hasRemarks).length;
+  elements.shareTodayButton.disabled = today.length === 0;
+  elements.shareTodayButton.textContent = today.length
+    ? `Поделиться за сегодня: ${today.length} (ZIP)` + (unfinished ? ` · с замечаниями: ${unfinished}` : "")
     : "Сегодняшних замеров для ZIP пока нет";
 }
 
@@ -3549,7 +3616,37 @@ async function saveFirstRoom(room) {
   showScreen("openings");
   await persist();
 }
+// The first room is already measured: a wall said again on its screen is a correction (Bolat, 06.10.2026: any number
+// can be fixed and the plan follows), never a new room that would drop its doors, windows and the rooms behind them.
+function firstRoomToCorrect() {
+  const room = packageData?.rooms?.[0];
+  return room && !isPolygonRoom(room) ? room : null;
+}
+async function correctFirstRoom(room) {
+  let next = packageData;
+  try {
+    [elements.firstLength.value, elements.secondLength.value].forEach((value, wallIndex) => {
+      const length = decimal(value);
+      if (Math.abs(length - room.walls[wallIndex].length_m) > 1e-9) next = setWallLength(next, 0, wallIndex, String(length));
+    });
+  } catch (error) {
+    // Nothing changes; the drawing goes back to the room as it is.
+    fillRoomForm(room);
+    renderRoomInput();
+    showError(`${error instanceof Error ? error.message : error} Назовите ещё раз.`);
+    return;
+  }
+  packageData = keepEndAnchors(packageData, next);
+  clearError();
+  showScreen("openings");
+  await persist();
+}
 async function saveRoomFromForm() {
+  const existing = firstRoomToCorrect();
+  if (existing) {
+    await correctFirstRoom(existing);
+    return;
+  }
   try {
     if (!confirmFirstRoomReplacement()) return;
     await saveFirstRoom(createRectangleRoom({
@@ -3573,7 +3670,13 @@ elements.openingsBackButton.addEventListener("click", () => {
   clearOpeningEdit();
   if (currentRoomIndex === 0 && packageData.rooms.length === 1) {
     if (isPolygonRoom(packageData.rooms[0])) openShape("first");
-    else showScreen("room");
+    else {
+      // The room screen shows the room as it is now (lengths may have been corrected on the doors screen), ready for
+      // a correction: no entrance steps again.
+      fillRoomForm(packageData.rooms[0]);
+      activeRoomWall = null;
+      showScreen("room");
+    }
   } else {
     showScreen("done");
   }
@@ -3716,7 +3819,7 @@ elements.shapeFewerButton.addEventListener("click", () => {
   schedulePersist();
 });
 elements.shapeMoreButton.addEventListener("click", () => {
-  shapeState.count = Math.min(MAX_SHAPE_UI_WALLS, shapeState.count + 1);
+  shapeState.count = Math.min(MAX_SHAPE_WALLS, shapeState.count + 1);
   shapeState.active = null;
   renderShape();
   schedulePersist();
@@ -3841,13 +3944,15 @@ elements.roomCanvas.addEventListener("click", (event) => {
     startContextVoice();
     return;
   }
-  if (wallIndex !== activeRoomWall) {
+  if (wallIndex !== activeRoomWall && !firstRoomToCorrect()) {
     // First tap only moves the blinking; the tap on the blinking wall opens the microphone.
     activeRoomWall = wallIndex;
     renderRoomInput();
     refreshVoiceTarget();
     return;
   }
+  // Correcting a measured room: nothing blinks before, one tap on the wall to fix opens the microphone.
+  activeRoomWall = wallIndex;
   const tappedField = wallIndex % 2 === 0 ? "firstLength" : "secondLength";
   roomOppositeTap = wallIndex >= 2 && decimal(elements[tappedField].value) > 0
     ? { wallIndex, field: tappedField, baseline: elements[tappedField].value }
