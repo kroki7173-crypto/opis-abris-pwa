@@ -1489,8 +1489,8 @@ function hintText() {
       const of = interiorGenitive(current);
       const inside = current.kind === "storage" ? " внутри" : "";
       const ask = {
-        offset: `Мигает угол ${corner} — от него меряем (меряли от другого — нажмите на тот угол). Назовите расстояние от угла до ${of} вдоль мигающей стены.`,
-        inset: `Назовите расстояние от угла ${corner} до ${of} вдоль второй мигающей стены.`,
+        offset: `Мигает угол ${corner} — от него меряем (меряли от другого — нажмите на тот угол). Назовите расстояние от угла до ${of} вдоль мигающей стены; стоит вплотную — «ноль».`,
+        inset: `Назовите расстояние от угла ${corner} до ${of} вдоль второй мигающей стены; вплотную — «ноль».`,
         width: `Назовите ширину ${of}${inside}.`,
         depth: `Назовите глубину ${of}${inside}.`,
         partition: `Назовите толщину перегородки ${of}.`,
@@ -1812,12 +1812,21 @@ async function chooseInteriorKind(choice) {
       ), 0);
       const frame = interiorFrame(room, corner);
       const relative = [tap[0] - frame.corner[0], tap[1] - frame.corner[1]];
+      // Nobody builds a bathroom or a storage in the middle of a room (Bolat, 07.10.2026): it stands against the wall
+      // the tap is near, in the corner when the tap is near both. Never floating: at least the nearer wall is touched.
+      const SNAP_M = 0.6;
       const placed = (size) => {
         const outer = size + (kind === "storage" ? 0.2 : 0);
+        let offset = Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - outer / 2);
+        let inset = Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - outer / 2);
+        if (offset < SNAP_M) offset = 0;
+        if (inset < SNAP_M) inset = 0;
+        if (offset > 0 && inset > 0) {
+          if (offset < inset) offset = 0;
+          else inset = 0;
+        }
         return fitStorageDoor({
-          kind, wallIndex: corner,
-          offsetM: round2(Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - outer / 2)),
-          insetM: round2(Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - outer / 2)),
+          kind, wallIndex: corner, offsetM: round2(offset), insetM: round2(inset),
           widthM: size, depthM: size, partitionM: 0.1, doorWidthM: chosen.door ?? 0.8, doorWall: 2, name: chosen.name ?? "Кладовка",
         });
       };
@@ -1826,7 +1835,7 @@ async function chooseInteriorKind(choice) {
       let next = null;
       for (const size of [1, 0.7, 0.5, 0.3].map((share) => round2(chosen.size * share))) {
         const values = placed(size);
-        for (const candidate of [values, { ...values, offsetM: 0.3, insetM: 0.3 }, { ...values, offsetM: 0.05, insetM: 0.05 }]) {
+        for (const candidate of [values, { ...values, offsetM: 0, insetM: 0 }, { ...values, offsetM: 0.3, insetM: 0.3 }]) {
           try {
             next = addInteriorToPackage(packageData, currentRoomIndex, candidate);
             break;
