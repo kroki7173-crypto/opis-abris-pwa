@@ -1567,7 +1567,8 @@ function hintText() {
       return "Балкон стоит по центру двери. Стоит не там — нажмите снаружи вдоль стены, где он на самом деле: у угла или выступающей стены он упрётся в неё. Размер — красная кнопка.";
     }
     const placing = stepOpening();
-    const of = openingStep?.balcony ? OPENING_GENITIVE.balcony : placing ? OPENING_GENITIVE[placing.kind] : "";
+    // The distance of a balcony is measured to its door.
+    const of = openingStep?.balcony ? "двери балкона" : placing ? OPENING_GENITIVE[placing.kind] : "";
     if (openingStep?.step === "kind") {
       return "Что в этой стене? Нажмите под рисунком: дверь, окно, проём или балкон. Длина стены другая — красная кнопка «Длина».";
     }
