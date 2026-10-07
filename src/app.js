@@ -790,7 +790,8 @@ function restoreInteriorStep(value) {
   if (value.step === "kind") {
     return Array.isArray(value.tap) && value.tap.length === 2 && value.tap.every(Number.isFinite) ? { step: "kind", tap: [...value.tap] } : null;
   }
-  return INTERIOR_STEPS.includes(value.step) && typeof value.id === "string" ? { step: value.step, id: value.id } : null;
+  return INTERIOR_STEPS.includes(value.step) && typeof value.id === "string"
+    ? { step: value.step, id: value.id, all: value.all === true } : null;
 }
 function restoreForm(draft) {
   const form = draft?.form ?? {};
@@ -1495,7 +1496,7 @@ function hintText() {
         depth: `Назовите глубину ${of}${inside}.`,
         partition: `Назовите толщину перегородки ${of}.`,
       }[interiorStep.step];
-      return `${ask} Микрофон — красная кнопка или касание рисунка.`;
+      return `${ask} Микрофон — красная кнопка или касание ${of}. Стоит не там — коснитесь места, где он стоит.`;
     }
     return "Нажмите внутрь комнаты, где санузел, кладовка или колонна. Дверь санузла или кладовки переносится касанием её стороны.";
   }
@@ -1797,6 +1798,35 @@ function startInteriorAt(tap) {
   renderInteriors();
   schedulePersist();
 }
+function nearestCorner(room, point) {
+  const corners = roomPoints(room).slice(0, -1);
+  return corners.reduce((best, corner, index) => (
+    Math.hypot(corner[0] - point[0], corner[1] - point[1]) < Math.hypot(corners[best][0] - point[0], corners[best][1] - point[1]) ? index : best
+  ), 0);
+}
+// Nobody builds a bathroom or a storage in the middle of a room (Bolat, 07.10.2026): it stands against the wall the
+// tap is near — in the corner when near both, in the middle of one wall when near only that one. Never floating: at
+// least the nearer wall is touched. Distances from `corner` for an object `along` × `inward` (outer sizes) at the tap.
+const SNAP_M = 0.6;
+function snapAt(room, corner, tap, along, inward) {
+  const frame = interiorFrame(room, corner);
+  const relative = [tap[0] - frame.corner[0], tap[1] - frame.corner[1]];
+  let offset = Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - along / 2);
+  let inset = Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - inward / 2);
+  if (offset < SNAP_M) offset = 0;
+  if (inset < SNAP_M) inset = 0;
+  if (offset > 0 && inset > 0) {
+    if (offset < inset) offset = 0;
+    else inset = 0;
+  }
+  return { offsetM: round2(offset), insetM: round2(inset) };
+}
+// Against the wall the distance to it is known: in a corner nothing is asked but the sizes; against one wall only the
+// distance along it, from the corner (Bolat, 07.10.2026). "Изменить" and another corner ask everything (`all`).
+function firstInteriorStep(interior) {
+  if (interior.offset_m === 0 && interior.inset_m === 0) return "width";
+  return interior.offset_m === 0 ? "inset" : "offset";
+}
 async function chooseInteriorKind(choice) {
   const room = packageData?.rooms?.[currentRoomIndex];
   const chosen = INTERIOR_CHOICES[choice];
@@ -1806,27 +1836,12 @@ async function chooseInteriorKind(choice) {
     if (interiorStep?.step === "kind") {
       // The corner nearest to the tap is the one it is measured from; another corner can be tapped later.
       const tap = interiorStep.tap;
-      const corners = roomPoints(room).slice(0, -1);
-      const corner = corners.reduce((best, point, index) => (
-        Math.hypot(point[0] - tap[0], point[1] - tap[1]) < Math.hypot(corners[best][0] - tap[0], corners[best][1] - tap[1]) ? index : best
-      ), 0);
-      const frame = interiorFrame(room, corner);
-      const relative = [tap[0] - frame.corner[0], tap[1] - frame.corner[1]];
-      // Nobody builds a bathroom or a storage in the middle of a room (Bolat, 07.10.2026): it stands against the wall
-      // the tap is near, in the corner when the tap is near both. Never floating: at least the nearer wall is touched.
-      const SNAP_M = 0.6;
+      const corner = nearestCorner(room, tap);
       const placed = (size) => {
         const outer = size + (kind === "storage" ? 0.2 : 0);
-        let offset = Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - outer / 2);
-        let inset = Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - outer / 2);
-        if (offset < SNAP_M) offset = 0;
-        if (inset < SNAP_M) inset = 0;
-        if (offset > 0 && inset > 0) {
-          if (offset < inset) offset = 0;
-          else inset = 0;
-        }
+        const { offsetM, insetM } = snapAt(room, corner, tap, outer, outer);
         return fitStorageDoor({
-          kind, wallIndex: corner, offsetM: round2(offset), insetM: round2(inset),
+          kind, wallIndex: corner, offsetM, insetM,
           widthM: size, depthM: size, partitionM: 0.1, doorWidthM: chosen.door ?? 0.8, doorWall: 2, name: chosen.name ?? "Кладовка",
         });
       };
@@ -1845,7 +1860,8 @@ async function chooseInteriorKind(choice) {
       }
       if (!next) throw new Error("Здесь не помещается: места слишком мало. Коснитесь другого места комнаты.");
       packageData = next;
-      interiorStep = { step: "offset", id: packageData.rooms[currentRoomIndex].interiors.at(-1).id };
+      const added = packageData.rooms[currentRoomIndex].interiors.at(-1);
+      interiorStep = { step: firstInteriorStep(added), id: added.id };
     } else {
       const interior = stepInterior();
       if (!interior) return;
@@ -1998,7 +2014,7 @@ function renderInteriors() {
     edit.textContent = "Изменить";
     // "Изменить" walks the same steps again, starting from the distance from its corner.
     edit.addEventListener("click", () => {
-      interiorStep = { step: "offset", id: interior.id };
+      interiorStep = { step: "offset", id: interior.id, all: true };
       renderInteriors();
     });
     actions.append(edit, remove);
@@ -3580,9 +3596,11 @@ for (const [step, field] of Object.entries(INTERIOR_FIELDS)) {
       return;
     }
     clearError();
+    // Against a wall the distance to it is zero and not asked, unless every question was asked for ("Изменить").
+    const all = Boolean(interiorStep.all);
     const next = INTERIOR_STEPS.slice(INTERIOR_STEPS.indexOf(step) + 1)
-      .find((item) => item !== "partition" || interior.kind === "storage");
-    interiorStep = next ? { step: next, id: interior.id } : null;
+      .find((item) => (item !== "partition" || interior.kind === "storage") && (item !== "inset" || all || interior.inset_m > 0));
+    interiorStep = next ? { step: next, id: interior.id, all } : null;
     renderInteriors();
     await persist();
   });
@@ -3607,11 +3625,43 @@ elements.interiorCanvas.addEventListener("click", async (event) => {
       // Measured from another corner: the object stays, the distances are asked from that corner.
       try {
         packageData = updateInteriorInPackage(packageData, currentRoomIndex, current.id, reanchorInterior(room, current, nearCorner));
-        interiorStep = { step: "offset", id: current.id };
+        interiorStep = { step: "offset", id: current.id, all: true };
         renderInteriors();
         await persist();
       } catch (error) {
         showError(error);
+      }
+      return;
+    }
+    // Standing elsewhere: a tap in the room where it really is moves it there, against the wall near the tap, and the
+    // questions start again for the new place. A tap on the object itself opens the microphone.
+    const contour = interiorPoints(room, current).map((item) => map.to(item));
+    if (!pointInPolygon([x, y], contour) && pointInPolygon([x, y], corners)) {
+      try {
+        const tap = map.from(x, y);
+        const corner = nearestCorner(room, tap);
+        const turned = corner === base ? interiorValues(room, current) : reanchorInterior(room, current, corner);
+        const partition = current.kind === "storage" ? (current.partition_m ?? 0.1) : 0;
+        const spot = snapAt(room, corner, tap, Number(turned.widthM) + 2 * partition, Number(turned.depthM) + 2 * partition);
+        // Its door keeps its side, unless that side now stands against a wall (moved into another corner): then the
+        // door goes to a free side, the one facing into the room first. Before, such a move said "не помещается".
+        const sides = current.kind === "storage" ? [...new Set([turned.doorWall, 2, 1, 3, 0])] : [turned.doorWall];
+        let moved = null;
+        for (const doorWall of sides) {
+          try {
+            moved = updateInteriorInPackage(packageData, currentRoomIndex, current.id,
+              fitStorageDoor({ ...turned, wallIndex: corner, ...spot, doorWall }));
+            break;
+          } catch { /* the next side */ }
+        }
+        if (!moved) throw new Error("no place");
+        packageData = moved;
+        interiorStep = { step: firstInteriorStep(stepInterior()), id: current.id };
+        clearError();
+        renderInteriors();
+        await persist();
+      } catch {
+        showError("Здесь не помещается. Коснитесь другого места комнаты.");
       }
       return;
     }
