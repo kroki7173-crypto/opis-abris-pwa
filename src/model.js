@@ -960,6 +960,14 @@ export function setWallLength(pkg, roomIndex, wallIndex, lengthM) {
   if (!wall) throw new Error("Стена не найдена.");
   const length = positiveNumber(lengthM, "Длина стены");
   if (length < 0.05) throw new Error("Стена должна быть не меньше 0,05 м.");
+  if (isRectangle(room)) {
+    const doorWallIndex = (wallIndex + 2) % 4;
+    const fullDoorWall = (index) => pkg.connections.some((connection) => connection.room_b_id === room.id &&
+      connection.wall_b_id === room.walls[index].id && (connection.mode ?? "full_wall") === "full_wall");
+    if (fullDoorWall(doorWallIndex) && !fullDoorWall(wallIndex) && Math.abs(length - wall.length_m) >= 0.005) {
+      return resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length);
+    }
+  }
   const sameWalls = isRectangle(room) ? [wallIndex, (wallIndex + 2) % 4] : [wallIndex];
   for (const index of sameWalls) {
     const incoming = pkg.connections.find((connection) => connection.room_b_id === room.id &&
@@ -976,6 +984,38 @@ export function setWallLength(pkg, roomIndex, wallIndex, lengthM) {
   if (["inferred_opposite", "confirmed_inferred"].includes(nextRoom.walls[wallIndex].source)) {
     nextRoom.walls[wallIndex].source = "measured";
   }
+  return finishEdit(next);
+}
+
+// The wall opposite the door wall of a room behind a door named different (Bolat, 07.10.2026): the room is wider or
+// narrower than the wall it was entered through. It stays a rectangle of the named width and hangs on its door from
+// the corner it starts at; the first room does not change. Before, the opposite wall dragged the shared wall along,
+// and the shared wall changed the room in front.
+function resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length) {
+  const next = structuredClone(pkg);
+  const room = next.rooms[roomIndex];
+  const doorWall = room.walls[doorWallIndex];
+  const connection = next.connections.find((item) => item.room_b_id === room.id && item.wall_b_id === doorWall.id);
+  const door = room.openings.find((item) => item.id === connection.opening_b_id);
+  if (length < door.width_m + 0.1 - 1e-9) {
+    const metres = (value) => value.toFixed(2).replace(".", ",");
+    throw new Error(`${door.kind === "door" ? "Дверь" : "Проём"} ${metres(door.width_m)} м не помещается на стене ${metres(length)} м.`);
+  }
+  // The other openings of a whole shared wall were the front room's, mirrored; on a wall of its own the room keeps
+  // only its door. One leading somewhere else cannot simply go.
+  const others = wallOpenings(room, doorWall.id).filter((item) => item.id !== door.id);
+  if (others.some((item) => next.connections.some((other) => other.opening_a_id === item.id || other.opening_b_id === item.id))) {
+    throw new Error("В этой стене есть другая дверь в соседнюю комнату: сначала удалите ту комнату.");
+  }
+  room.openings = room.openings.filter((item) => !others.includes(item));
+  const offset = roundMetres(Math.min(Math.max(0, door.offset_m), length - door.width_m));
+  connection.mode = "door_anchor";
+  connection.anchor_corner = "start";
+  connection.anchor_offset_m = offset;
+  door.offset_m = offset;
+  setRoomWallLength(room, doorWallIndex, length);
+  doorWall.source = "inferred_opposite";
+  room.walls[(doorWallIndex + 2) % 4].source = "measured";
   return finishEdit(next);
 }
 

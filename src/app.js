@@ -58,7 +58,7 @@ const ids = [
   "openingCanvas", "openingOverviewCanvas", "openingWall", "openingOffset",
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
   "openingEditPanel", "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
-  "openingThicknessPrompt", "openingThicknessText",
+  "openingThicknessPrompt", "openingThicknessText", "wallLengthPrompt", "wallLengthText",
   "interiorBackButton", "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
   "interiorPartition", "interiorDoorWidth", "interiorDoorWall", "storageFields",
@@ -533,6 +533,11 @@ function initializeUi() {
     selectVoiceTargetById(openingStep?.step === "width" ? "openingWidth" : "wallThickness");
     startContextVoice();
   });
+  // A tapped wall can be measured right there, before or after its doors and windows (Bolat, 07.10.2026): the
+  // technician walks his own way round the room.
+  elements.wallLengthPrompt.addEventListener("click", () => {
+    if (openingStep?.step === "kind") startWallFix(openingStep.wallIndex);
+  });
   elements.adjacentAnchorCornerButton.addEventListener("click", () => {
     elements.adjacentAnchorCorner.value = elements.adjacentAnchorCorner.value === "start" ? "end" : "start";
     elements.adjacentAnchorCorner.dispatchEvent(new Event("input", { bubbles: true }));
@@ -778,6 +783,7 @@ function restoreOpeningStep(value) {
   if (value.step === "kind") return Number.isInteger(value.wallIndex) && value.wallIndex >= 0 ? { step: "kind", wallIndex: value.wallIndex } : null;
   if (!["side", "width", "thickness"].includes(value.step) || typeof value.id !== "string") return null;
   const step = { step: value.step, id: value.id, editing: value.editing === true };
+  if (value.reanchor === true) step.reanchor = true;
   if (value.step !== "thickness") step.side = ["start", "end"].includes(value.side) ? value.side : null;
   if (value.step === "width") {
     if (!step.side || !Number.isFinite(value.distance)) return null;
@@ -1467,7 +1473,12 @@ function hintText() {
   if (currentScreen === "openings") {
     const placing = stepOpening();
     const of = placing ? OPENING_GENITIVE[placing.kind] : "";
-    if (openingStep?.step === "kind") return "Что в этой стене? Нажмите под рисунком: дверь, окно или проём.";
+    if (openingStep?.step === "kind") {
+      return "Что в этой стене? Нажмите под рисунком: дверь, окно или проём. Длина стены другая — красная кнопка «Длина».";
+    }
+    if (openingStep?.step === "side" && openingStep.reanchor && !openingStep.side) {
+      return "Комната шире или уже стены, через которую вошли. Где в ней дверь: нажмите на мигающий кусок стены слева или справа от двери и назовите расстояние от угла до двери.";
+    }
     if (openingStep?.step === "side" && !openingStep.side) {
       return `Нажмите на мигающий кусок стены слева или справа от ${of} и назовите расстояние от угла до ${of}.`;
     }
@@ -2244,7 +2255,15 @@ function renderOpenings() {
 
   const missingThickness = openingStep?.step === "thickness" ? guided
     : openingStep?.step === "width" ? null : latestOpeningWithoutThickness(room);
-  elements.openingThicknessPrompt.hidden = !missingThickness && openingStep?.step !== "width";
+  // While the content of a wall is asked, its length can be said; a thickness owed elsewhere waits.
+  const askingWall = openingStep?.step === "kind" ? room.walls[openingStep.wallIndex] : null;
+  elements.wallLengthPrompt.hidden = !askingWall;
+  if (askingWall) {
+    const from = cornerName(openingStep.wallIndex);
+    const to = cornerName((openingStep.wallIndex + 1) % room.walls.length);
+    elements.wallLengthText.textContent = `Длина ${from}–${to}: ${formatLength(askingWall.length_m)} м ?`;
+  }
+  elements.openingThicknessPrompt.hidden = Boolean(askingWall) || (!missingThickness && openingStep?.step !== "width");
   if (openingStep?.step === "width" && guided) {
     elements.openingThicknessText.textContent = `Ширина ${OPENING_GENITIVE[guided.kind]} ?`;
   } else if (missingThickness) {
@@ -3026,11 +3045,21 @@ function keepEndAnchors(before, after) {
 async function applyFix(fix, raw) {
   const value = decimal(raw);
   if (!(value > 0)) return;
+  const roomId = packageData.rooms[fix.roomIndex]?.id;
+  const entry = (pkg) => pkg.connections.find((connection) => connection.room_b_id === roomId);
+  const wasWholeWall = (entry(packageData)?.mode ?? "full_wall") === "full_wall" && Boolean(entry(packageData));
   try {
     packageData = fix.type === "wall" ? keepEndAnchors(packageData, setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value)))
       : fix.type === "height" ? setCeilingHeight(packageData, String(value))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
+    const now = entry(packageData);
+    if (fix.type === "wall" && wasWholeWall && now?.mode === "door_anchor") {
+      // The room turned out wider or narrower than the wall it was entered through: where its door is, is asked
+      // like any door — the piece of wall, the distance from the corner (the room slides along).
+      currentRoomIndex = fix.roomIndex;
+      openingStep = { step: "side", id: now.opening_b_id, side: null, editing: true, reanchor: true };
+    }
   } catch (error) {
     showError(error);
   }

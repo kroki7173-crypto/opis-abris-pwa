@@ -119,10 +119,13 @@
         <canvas id="openingOverviewCanvas" class="overview-inset" width="360" height="240" aria-label="Общий план, эта комната выделена" hidden></canvas>
         <canvas id="openingCanvas" width="720" height="560"
                 aria-label="План комнаты. Нажмите на стену, чтобы поставить дверь или окно"></canvas>
-        <figcaption class="plan-tip">Стена — проём. Дверь — следующая комната. Внутри комнаты — санузел, кладовка, колонна</figcaption>
+        <figcaption class="plan-tip">Стена — её длина или проём. Дверь — следующая комната. Внутри комнаты — санузел, кладовка, колонна</figcaption>
       </figure>
       <label id="wallFixBar" class="wall-fix" hidden><span id="wallFixLabel"></span>
         <input id="wallFixInput" inputmode="decimal" autocomplete="off"></label>
+      <button id="wallLengthPrompt" class="thickness-prompt" type="button" hidden>
+        <span id="wallLengthText">Длина стены ?</span><span aria-hidden="true">🎙</span>
+      </button>
 
       <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
         <button type="button" data-kind="door" class="type"><span aria-hidden="true">▯</span>Дверь 0,80</button>
