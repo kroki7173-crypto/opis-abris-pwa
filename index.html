@@ -126,19 +126,20 @@
       <button id="wallLengthPrompt" class="thickness-prompt" type="button" hidden>
         <span id="wallLengthText">Длина стены ?</span><span aria-hidden="true">🎙</span>
       </button>
-      <label id="balconyBar" class="wall-fix" hidden><span>Балкон, сколько на сколько:</span>
-        <input id="balconySize" autocomplete="off" placeholder="1 на 2"></label>
       <div id="balconyActions" class="balcony-actions" hidden>
         <button id="balconyPrompt" class="thickness-prompt" type="button">
-          <span id="balconyText">Балкон ?</span><span aria-hidden="true">🎙</span>
+          <span id="balconyText">Балкон: сколько на сколько ?</span><span aria-hidden="true">🎙</span>
         </button>
-        <button id="balconyRemoveButton" class="quiet compact" type="button">Убрать балкон</button>
+        <input id="balconySize" type="text" autocomplete="off" placeholder="1 на 2"
+               aria-label="Размер балкона, сколько на сколько" hidden>
+        <button id="balconyRemoveButton" class="quiet compact" type="button" hidden>Убрать балкон</button>
       </div>
 
       <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
         <button type="button" data-kind="door" class="type"><span aria-hidden="true">▯</span>Дверь 0,80</button>
         <button type="button" data-kind="window" class="type"><span aria-hidden="true">═</span>Окно 1,30</button>
         <button type="button" data-kind="passage" class="type"><span aria-hidden="true">□</span>Проём</button>
+        <button type="button" data-kind="balcony" class="type"><span aria-hidden="true">▤</span>Балкон</button>
       </div>
 
       <div id="openingEditPanel" hidden>
