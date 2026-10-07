@@ -28,6 +28,7 @@ import {
   updateInteriorInPackage,
   updateOpeningInPackage,
   validatePackage,
+  wallThickness,
 } from "./model.js";
 import {
   clearDraft,
@@ -1302,6 +1303,27 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
     drawCornerLetters(context, corners, canvasOutward(corners));
   }
 }
+// The outer face of a room's walls: every wall line moved out by its own thickness, neighbours joined where the moved
+// lines cross (the desktop's outer_points does the same).
+function outerOutline(room) {
+  const corners = roomPoints(room).slice(0, -1);
+  const outwardOf = canvasOutward(corners);
+  const lines = corners.map((a, index) => {
+    const b = corners[(index + 1) % corners.length];
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const out = outwardOf(a, b);
+    const thickness = wallThickness(room, room.walls[index]);
+    return { point: [a[0] + out[0] * thickness, a[1] + out[1] * thickness], unit: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] };
+  });
+  return lines.map((line, index) => {
+    const previous = lines[(index + lines.length - 1) % lines.length];
+    const cross = previous.unit[0] * line.unit[1] - previous.unit[1] * line.unit[0];
+    if (Math.abs(cross) < 1e-9) return line.point;
+    const delta = [line.point[0] - previous.point[0], line.point[1] - previous.point[1]];
+    const along = (delta[0] * line.unit[1] - delta[1] * line.unit[0]) / cross;
+    return [previous.point[0] + previous.unit[0] * along, previous.point[1] + previous.unit[1] * along];
+  });
+}
 function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
@@ -1312,8 +1334,14 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   context.fillRect(0, 0, canvas.width, canvas.height);
   canvas.roomShapes = [];
   if (!pkg?.rooms?.length) return;
+  // The whole plan is drawn with its walls (Bolat, 07.10.2026: rooms stood apart like separate boxes): every wall is a
+  // band as thick as it is, so the gap between two rooms is the wall they share, as on the desktop and the print.
+  // Partitions between rooms without a door take the gap between them, as in the file that goes out.
+  let shown = pkg;
+  try { shown = inferPartitionThickness(pkg); } catch { /* an unfinished plan is drawn as it is */ }
+  const outers = shown.rooms.map(outerOutline);
   const roomPointSets = pkg.rooms.map((room) => roomPoints(room));
-  const points = roomPointSets.flatMap((room) => room.slice(0, -1));
+  const points = [...roomPointSets.flatMap((room) => room.slice(0, -1)), ...outers.flat()];
   const minX = Math.min(...points.map((point) => point[0]));
   const maxX = Math.max(...points.map((point) => point[0]));
   const minY = Math.min(...points.map((point) => point[1]));
@@ -1330,44 +1358,76 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
     canvas.height / 2 + (canvas.height - offsetY - (point[1] - minY) * scale - canvas.height / 2) * view.zoom + view.y,
   ];
 
+  const px = canvas.clientWidth ? canvas.width / canvas.clientWidth : 1;
+  const path = (polygon) => {
+    context.moveTo(polygon[0][0], polygon[0][1]);
+    for (const point of polygon.slice(1)) context.lineTo(point[0], point[1]);
+    context.closePath();
+  };
+  // Walls of every room first; each room's floor then covers a wall drawn too thick into it.
+  context.fillStyle = measured;
+  shown.rooms.forEach((room, roomIndex) => {
+    context.beginPath();
+    path(outers[roomIndex].map(transform));
+    path(roomPointSets[roomIndex].slice(0, -1).map(transform));
+    context.fill("evenodd");
+  });
   roomPointSets.forEach((roomPointsValue, roomIndex) => {
-    const room = pkg.rooms[roomIndex];
     const transformed = roomPointsValue.map(transform);
     canvas.roomShapes.push({ index: roomIndex, points: transformed });
     // The room the technician is in is filled in the selection colour on the small plan in the corner.
     context.fillStyle = canvas.highlightRoom === roomIndex ? uiColor("--select-bg", "#cfe0f5") : surface;
-    context.strokeStyle = measured;
-    context.lineWidth = 7;
     context.beginPath();
-    context.moveTo(transformed[0][0], transformed[0][1]);
-    for (const point of transformed.slice(1)) context.lineTo(point[0], point[1]);
+    path(transformed.slice(0, -1));
     context.fill();
-    context.stroke();
-
+  });
+  shown.rooms.forEach((room, roomIndex) => {
     for (const interior of room.interiors ?? []) {
       drawInteriorSymbol(context, interiorPoints(room, interior).map(transform), interior);
     }
-
+    // A door or passage is a gap through the wall, a door with one line across it; a window, lines along the wall.
+    const corners = roomPointSets[roomIndex].slice(0, -1);
+    const outwardOf = canvasOutward(corners);
     for (const opening of room.openings) {
       const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
-      const wall = room.walls[wallIndex];
-      const start = transformed[wallIndex];
-      const end = transformed[wallIndex + 1];
-      const dx = (end[0] - start[0]) / wall.length_m;
-      const dy = (end[1] - start[1]) / wall.length_m;
-      drawOpeningSymbol(context, [
-        start[0] + dx * opening.offset_m,
-        start[1] + dy * opening.offset_m,
-        start[0] + dx * (opening.offset_m + opening.width_m),
-        start[1] + dy * (opening.offset_m + opening.width_m),
-      ], opening, surface);
+      if (wallIndex < 0) continue;
+      const a = corners[wallIndex];
+      const b = corners[(wallIndex + 1) % corners.length];
+      const length = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const unit = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+      const out = outwardOf(a, b);
+      const thickness = opening.wall_thickness_m ?? wallThickness(room, room.walls[wallIndex]);
+      const at = (along, across) => transform([
+        a[0] + unit[0] * along + out[0] * across, a[1] + unit[1] * along + out[1] * across,
+      ]);
+      const from = opening.offset_m;
+      const to = opening.offset_m + opening.width_m;
+      context.beginPath();
+      path([at(from, -0.01), at(to, -0.01), at(to, thickness + 0.01), at(from, thickness + 0.01)]);
+      context.fillStyle = opening.kind === "window" ? field : surface;
+      context.fill();
+      context.strokeStyle = measured;
+      context.lineWidth = 1.5 * px;
+      context.beginPath();
+      if (opening.kind === "window") {
+        for (const across of [0, thickness / 2, thickness]) {
+          const [x1, y1] = at(from, across);
+          const [x2, y2] = at(to, across);
+          context.moveTo(x1, y1);
+          context.lineTo(x2, y2);
+        }
+      } else if (opening.kind === "door") {
+        const [x1, y1] = at(from, thickness / 2);
+        const [x2, y2] = at(to, thickness / 2);
+        context.moveTo(x1, y1);
+        context.lineTo(x2, y2);
+      }
+      context.stroke();
     }
-
   });
   // Places the app does not understand: a red numbered mark, the same number as in the list under the plan.
   // One fixed red with white digits reads in both themes.
   // The canvas is in device pixels: the mark is sized in screen points so it reads on a phone.
-  const px = canvas.clientWidth ? canvas.width / canvas.clientWidth : 1;
   (canvas.problemPoints ?? []).forEach((point, index) => {
     if (!point) return;
     const [x, y] = transform(point);
@@ -1422,22 +1482,22 @@ function hintText() {
   }
   if (currentScreen === "interior") {
     const current = stepInterior();
-    if (interiorStep?.step === "kind") return "Что здесь? Нажмите под рисунком: кладовка, колонна или проём в полу.";
+    if (interiorStep?.step === "kind") return "Что здесь? Нажмите под рисунком: санузел, кладовка или колонна.";
     if (current) {
       const room = packageData.rooms[currentRoomIndex];
       const corner = cornerName(Math.max(room.walls.findIndex((wall) => wall.id === current.wall_id), 0));
-      const of = INTERIOR_GENITIVE[current.kind];
+      const of = interiorGenitive(current);
       const inside = current.kind === "storage" ? " внутри" : "";
       const ask = {
         offset: `Мигает угол ${corner} — от него меряем (меряли от другого — нажмите на тот угол). Назовите расстояние от угла до ${of} вдоль мигающей стены.`,
         inset: `Назовите расстояние от угла ${corner} до ${of} вдоль второй мигающей стены.`,
         width: `Назовите ширину ${of}${inside}.`,
         depth: `Назовите глубину ${of}${inside}.`,
-        partition: "Назовите толщину перегородки кладовки.",
+        partition: `Назовите толщину перегородки ${of}.`,
       }[interiorStep.step];
       return `${ask} Микрофон — красная кнопка или касание рисунка.`;
     }
-    return "Нажмите внутрь комнаты, где кладовка, колонна или проём в полу. Дверь кладовки переносится касанием её стороны.";
+    return "Нажмите внутрь комнаты, где санузел, кладовка или колонна. Дверь санузла или кладовки переносится касанием её стороны.";
   }
   if (currentScreen === "adjacent") {
     if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
@@ -1656,8 +1716,23 @@ function beginInteriorEdit(interior) {
 // storage. A tap on a side of a storage moves its door there.
 // { step: "kind", tap: [x, y] } | { step: "offset" | "inset" | "width" | "depth" | "partition", id }
 let interiorStep = null;
-const INTERIOR_DEFAULT_SIZE = { storage: 1.2, column: 0.4, void: 1 };
-const INTERIOR_GENITIVE = { storage: "кладовки", column: "колонны", void: "проёма" };
+// What can stand inside a room (Bolat, 07.10.2026): a bathroom first — every flat has one, then a storage, then a
+// column. A bathroom is a storage of the contract (`kind: "storage"`, partitions and a door) named "Санузел": the
+// desktop prints the name, the measurement format does not change. The floor opening ("void") left the buttons: nobody
+// knew what it was; old files with one still open and draw.
+const INTERIOR_CHOICES = {
+  bathroom: { kind: "storage", name: "Санузел", size: 1.5, door: 0.6, genitive: "санузла" },
+  storage: { kind: "storage", name: "Кладовка", size: 1.2, door: 0.8, genitive: "кладовки" },
+  column: { kind: "column", size: 0.4, genitive: "колонны" },
+};
+const STORAGE_NAMES = ["Кладовка", "Санузел"];
+function interiorChoice(interior) {
+  if (interior?.kind === "storage") return interior.name === "Санузел" ? "bathroom" : "storage";
+  return interior?.kind ?? null;
+}
+function interiorGenitive(interior) {
+  return INTERIOR_CHOICES[interiorChoice(interior)]?.genitive ?? "проёма";
+}
 const INTERIOR_STEPS = ["offset", "inset", "width", "depth", "partition"];
 const INTERIOR_FIELDS = { offset: "interiorOffset", inset: "interiorInset", width: "interiorWidth", depth: "interiorDepth", partition: "interiorPartition" };
 const INTERIOR_KEYS = { offset: "offsetM", inset: "insetM", width: "widthM", depth: "depthM", partition: "partitionM" };
@@ -1706,11 +1781,12 @@ function interiorValues(room, interior) {
     name: interior.name ?? "Кладовка",
   };
 }
-// The door of a storage stays at least 5 cm from its corners when the storage gets smaller.
+// The door of a storage stays at least 5 cm from its corners when the storage gets smaller. A bathroom door is 0,60.
 function fitStorageDoor(values) {
   if (values.kind !== "storage") return values;
   const side = values.doorWall % 2 === 0 ? Number(values.widthM) : Number(values.depthM);
-  return { ...values, doorWidthM: Math.max(0.3, Math.min(0.8, Math.round((side - 0.1) * 100) / 100)) };
+  const usual = values.name === "Санузел" ? 0.6 : 0.8;
+  return { ...values, doorWidthM: Math.max(0.3, Math.min(usual, Math.round((side - 0.1) * 100) / 100)) };
 }
 function round2(value) {
   return Math.round(value * 100) / 100;
@@ -1719,10 +1795,13 @@ function startInteriorAt(tap) {
   clearError();
   interiorStep = { step: "kind", tap };
   renderInteriors();
+  schedulePersist();
 }
-async function chooseInteriorKind(kind) {
+async function chooseInteriorKind(choice) {
   const room = packageData?.rooms?.[currentRoomIndex];
-  if (!room) return;
+  const chosen = INTERIOR_CHOICES[choice];
+  if (!room || !chosen) return;
+  const kind = chosen.kind;
   try {
     if (interiorStep?.step === "kind") {
       // The corner nearest to the tap is the one it is measured from; another corner can be tapped later.
@@ -1731,28 +1810,41 @@ async function chooseInteriorKind(kind) {
       const corner = corners.reduce((best, point, index) => (
         Math.hypot(point[0] - tap[0], point[1] - tap[1]) < Math.hypot(corners[best][0] - tap[0], corners[best][1] - tap[1]) ? index : best
       ), 0);
-      const size = INTERIOR_DEFAULT_SIZE[kind];
-      const outer = size + (kind === "storage" ? 0.2 : 0);
       const frame = interiorFrame(room, corner);
       const relative = [tap[0] - frame.corner[0], tap[1] - frame.corner[1]];
-      const values = fitStorageDoor({
-        kind, wallIndex: corner,
-        offsetM: round2(Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - outer / 2)),
-        insetM: round2(Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - outer / 2)),
-        widthM: size, depthM: size, partitionM: 0.1, doorWidthM: 0.8, doorWall: 2, name: "Кладовка",
-      });
-      try {
-        packageData = addInteriorToPackage(packageData, currentRoomIndex, values);
-      } catch {
-        // Too close to something: start right at the corner instead; the distances are asked anyway.
-        packageData = addInteriorToPackage(packageData, currentRoomIndex, { ...values, offsetM: 0.3, insetM: 0.3 });
+      const placed = (size) => {
+        const outer = size + (kind === "storage" ? 0.2 : 0);
+        return fitStorageDoor({
+          kind, wallIndex: corner,
+          offsetM: round2(Math.max(0, relative[0] * frame.unit[0] + relative[1] * frame.unit[1] - outer / 2)),
+          insetM: round2(Math.max(0, relative[0] * frame.inward[0] + relative[1] * frame.inward[1] - outer / 2)),
+          widthM: size, depthM: size, partitionM: 0.1, doorWidthM: chosen.door ?? 0.8, doorWall: 2, name: chosen.name ?? "Кладовка",
+        });
+      };
+      // At the tap, else from the corner; in a small room (a bathroom 1,5 m in a 1,5 m room) a smaller one first.
+      // The real sizes are asked anyway.
+      let next = null;
+      for (const size of [1, 0.7, 0.5, 0.3].map((share) => round2(chosen.size * share))) {
+        const values = placed(size);
+        for (const candidate of [values, { ...values, offsetM: 0.3, insetM: 0.3 }, { ...values, offsetM: 0.05, insetM: 0.05 }]) {
+          try {
+            next = addInteriorToPackage(packageData, currentRoomIndex, candidate);
+            break;
+          } catch { /* the next place or size */ }
+        }
+        if (next) break;
       }
+      if (!next) throw new Error("Здесь не помещается: места слишком мало. Коснитесь другого места комнаты.");
+      packageData = next;
       interiorStep = { step: "offset", id: packageData.rooms[currentRoomIndex].interiors.at(-1).id };
     } else {
       const interior = stepInterior();
       if (!interior) return;
+      // A storage turned into a bathroom (or back) takes its name, unless the technician named it otherwise.
+      const name = kind === "storage" && (interior.kind !== "storage" || STORAGE_NAMES.includes(interior.name))
+        ? chosen.name : interior.name;
       packageData = updateInteriorInPackage(packageData, currentRoomIndex, interior.id,
-        fitStorageDoor({ ...interiorValues(room, interior), kind }));
+        fitStorageDoor({ ...interiorValues(room, interior), kind, name }));
       if (interiorStep.step === "partition" && kind !== "storage") interiorStep = null;
     }
     interiorKind = kind;
@@ -1810,8 +1902,8 @@ function interiorAskText(room, interior) {
   return {
     offset: `Вдоль стены ${a}–${cornerName((corner + 1) % count)} ?`,
     inset: `Вдоль стены ${a}–${cornerName((corner + count - 1) % count)} ?`,
-    width: `Ширина ${INTERIOR_GENITIVE[interior.kind]} ?`,
-    depth: `Глубина ${INTERIOR_GENITIVE[interior.kind]} ?`,
+    width: `Ширина ${interiorGenitive(interior)} ?`,
+    depth: `Глубина ${interiorGenitive(interior)} ?`,
     partition: "Перегородка ?",
   }[interiorStep.step];
 }
@@ -1820,7 +1912,7 @@ function renderInteriors() {
   if (!room) return;
   if (interiorStep?.id && !stepInterior()) interiorStep = null;
   const current = stepInterior();
-  for (const button of interiorKindButtons) button.classList.toggle("active", button.dataset.interiorKind === current?.kind);
+  for (const button of interiorKindButtons) button.classList.toggle("active", button.dataset.interiorKind === interiorChoice(current));
   interiorKindButtons[0]?.parentElement?.classList.toggle("ask", interiorStep?.step === "kind");
   elements.interiorAskChip.hidden = !current;
   if (current) {
@@ -2189,6 +2281,7 @@ function renderOpenings() {
       clearOpeningEdit(false);
       openingStep = { step: "side", id: opening.id, side: null, editing: true };
       renderOpenings();
+      schedulePersist();
     });
     actions.append(edit);
     const remove = document.createElement("button");
@@ -3027,7 +3120,8 @@ function startWallFix(wallIndex) {
   elements.wallFixLabel.textContent = `Стена ${cornerName(wallIndex)}–${cornerName((wallIndex + 1) % room.walls.length)}, новая длина, м:`;
   elements.wallFixInput.value = formatLength(wallFix.value);
   elements.wallFixBar.hidden = false;
-  selectVoiceTarget(elements.wallFixInput, "measurement", "новую длину стены");
+  selectVoiceTarget(elements.wallFixInput, "measurement",
+    `новую длину стены ${cornerName(wallIndex)}–${cornerName((wallIndex + 1) % room.walls.length)}`);
   if (voiceController.capability().available) startContextVoice();
   else elements.wallFixInput.focus();
 }
@@ -3997,7 +4091,12 @@ elements.openingCanvas.addEventListener("click", async (event) => {
   const bounds = elements.openingCanvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
-  const length = openingStep ? null : (elements.openingCanvas.lengthHitboxes ?? []).find((box) =>
+  // A length label is outside its wall: only a tap outside the room and clear of the wall line corrects the number.
+  // Its box used to reach over the wall, and a tap meant for a door opened "новая длина" with the microphone.
+  const outline = canvasRoomOutline(elements.openingCanvas, room);
+  const clearOfWalls = !pointInPolygon([x, y], outline) && outline.every((point, index) =>
+    distanceToCanvasSegment(x, y, point, outline[(index + 1) % outline.length]) >= 18);
+  const length = openingStep || !clearOfWalls ? null : (elements.openingCanvas.lengthHitboxes ?? []).find((box) =>
     x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
   if (length) {
     startWallFix(length.wallIndex);
@@ -4040,6 +4139,7 @@ elements.openingCanvas.addEventListener("click", async (event) => {
       clearOpeningEdit(false);
       openingStep = { step: "side", id: hit.id, side: null, editing: true };
       renderOpenings();
+      schedulePersist();
     }
     return;
   }
@@ -4052,6 +4152,7 @@ elements.openingCanvas.addEventListener("click", async (event) => {
   clearError();
   openingStep = { step: "kind", wallIndex };
   renderOpenings();
+  schedulePersist();
 });
 // The distance from the corner, dictated or typed, puts the opening in its place.
 elements.openingOffset.addEventListener("change", () => {
