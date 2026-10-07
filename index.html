@@ -126,6 +126,14 @@
       <button id="wallLengthPrompt" class="thickness-prompt" type="button" hidden>
         <span id="wallLengthText">Длина стены ?</span><span aria-hidden="true">🎙</span>
       </button>
+      <label id="balconyBar" class="wall-fix" hidden><span>Балкон, сколько на сколько:</span>
+        <input id="balconySize" autocomplete="off" placeholder="1 на 2"></label>
+      <div id="balconyActions" class="balcony-actions" hidden>
+        <button id="balconyPrompt" class="thickness-prompt" type="button">
+          <span id="balconyText">Балкон ?</span><span aria-hidden="true">🎙</span>
+        </button>
+        <button id="balconyRemoveButton" class="quiet compact" type="button">Убрать балкон</button>
+      </div>
 
       <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
         <button type="button" data-kind="door" class="type"><span aria-hidden="true">▯</span>Дверь 0,80</button>
@@ -207,6 +215,8 @@
       <div class="plan-toolbar">
         <button id="adjacentBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
         <strong>Следующая комната</strong>
+        <!-- A balcony is not measured as a room (Bolat, 08.10.2026): its size is said and it is drawn by its symbol. -->
+        <button id="adjacentBalconyButton" class="secondary compact toolbar-end" type="button">Балкон</button>
       </div>
       <span id="adjacentFrom" hidden></span>
 

@@ -134,6 +134,19 @@ export function spokenMeasurement(transcript, kind = "length") {
   return formatted(value);
 }
 
+// A balcony is said as two sizes (Bolat, 08.10.2026): "метр на два", "1,2 на 3", "1х2", "полтора на три метра".
+// Returns both numbers in metres as said; which one is the depth is decided by the model (the smaller one).
+export function spokenBalcony(transcript) {
+  const raw = String(transcript ?? "").trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е")
+    .replace(/(\d)\s*:\s*(\d)/gu, "$1 $2");
+  // "х" splits only between numbers or as a word of its own: it occurs inside number words ("двух").
+  const parts = raw.split(/\s+на\s+|\s*[×*]\s*|(?<=\d)\s*[xх]\s*(?=\d)|\s+[xх]\s+/u).map((part) => part.replace(/^балкон\s*/u, "").trim());
+  if (parts.length !== 2 || parts.some((part) => !part)) {
+    throw new Error(`Не понял размер балкона: «${transcript}». Скажите так: «метр на два».`);
+  }
+  return parts.map((part) => Number(spokenMeasurement(part, "length").replace(",", ".")));
+}
+
 function measuredValue(raw, kind, transcript) {
   const direct = raw.match(/^\s*(\d+(?:[.,]\d+)?)\s*(м|метр(?:а|ов)?|см|сантиметр(?:а|ов)?)?\s*$/u);
   if (direct) {

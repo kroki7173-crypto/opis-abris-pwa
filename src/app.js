@@ -1,8 +1,11 @@
 import {
   MAX_SHAPE_WALLS,
   OPENING_PRESETS,
+  addBalconyToPackage,
   addInteriorToPackage,
   addOpeningToPackage,
+  balconyForOpening,
+  balconyPoints,
   connectionForOpening,
   connectionsForWall,
   createAdjacentRoom,
@@ -16,15 +19,18 @@ import {
   interiorPoints,
   isPolygonRoom,
   planProblems,
+  removeBalconyFromPackage,
   removeInteriorFromPackage,
   removeOpeningFromPackage,
   removeRoomFromPackage,
   roomsBehind,
   setCeilingHeight,
+  roomOuterPolygon,
   roomPoints,
   setOpeningWallThickness,
   setWallLength,
   solveOutline,
+  updateBalconyInPackage,
   updateInteriorInPackage,
   updateOpeningInPackage,
   validatePackage,
@@ -46,7 +52,7 @@ import {
   surveysForLocalDay,
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
-import { addressLesson, createVoiceController, spokenAddress, spokenMeasurement } from "./voice.js";
+import { addressLesson, createVoiceController, spokenAddress, spokenBalcony, spokenMeasurement } from "./voice.js";
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
@@ -77,6 +83,7 @@ const ids = [
   "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
   "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "removeRoomButton", "summaryHeight",
+  "adjacentBalconyButton", "balconyBar", "balconySize", "balconyActions", "balconyPrompt", "balconyText", "balconyRemoveButton",
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 const kindButtons = [...document.querySelectorAll("[data-kind]")];
@@ -101,6 +108,7 @@ const VOICE_FIELDS = [
   ["interiorDepth", "measurement", "глубину внутреннего объекта"],
   ["interiorPartition", "thickness", "толщину перегородки"],
   ["interiorDoorWidth", "width", "ширину двери кладовки"],
+  ["balconySize", "text", "размер балкона: «метр на два»"],
 ];
 const voiceController = createVoiceController(window, setVoiceStatus);
 
@@ -151,6 +159,8 @@ let openingStep = null;
 // Which corner each opening was measured from ({ id: "start" | "end" }): the list shows the distance from that one.
 // Kept in the draft on the phone only; the measurement file does not carry it.
 let openingAnchors = {};
+// The balcony of a door on the doors screen (Bolat, 08.10.2026): { openingId, asking } — asking: its size is being said.
+let balconyStep = null;
 const OPENING_DEFAULT_WIDTH = { door: 0.8, window: 1.3, passage: 0.9 };
 const OPENING_GENITIVE = { door: "двери", window: "окна", passage: "проёма" };
 // A new opening is centred on its wall until the technician types or dictates a distance.
@@ -667,6 +677,7 @@ function showScreen(name) {
   // Another room or screen of the survey ends a half-placed opening; tabs like "Объекты" keep it.
   if (WORK_SCREENS.includes(name) && name !== "openings") openingStep = null;
   if (WORK_SCREENS.includes(name) && name !== "interior") interiorStep = null;
+  if (WORK_SCREENS.includes(name) && name !== "openings") balconyStep = null;
   if (name !== "interior") cancelAnimationFrame(interiorPulseFrame);
   document.documentElement.dataset.screen = name;
   if (name === "start") {
@@ -677,6 +688,10 @@ function showScreen(name) {
   if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
   if (name !== "openings" && elements.wallFixBar) elements.wallFixBar.hidden = true;
+  if (name !== "openings") {
+    elements.balconyBar.hidden = true;
+    elements.balconyActions.hidden = true;
+  }
   if (name !== "adjacent") cancelAnimationFrame(adjacentPulseFrame);
   const microphoneHost = elements[name + "Screen"]?.querySelector(".plan-toolbar, .address-field, [data-mic-host]");
   (microphoneHost ?? document.querySelector(".shell")).append(elements.contextMicButton);
@@ -732,6 +747,7 @@ function draftValue() {
     editingInteriorId,
     openingStep,
     interiorStep,
+    balconyStep,
     form: {
       address: elements.address.value,
       roomName: elements.roomName.value,
@@ -843,6 +859,8 @@ function restoreForm(draft) {
   // A door or storage half placed when the page reloaded continues at the same question.
   openingStep = restoreOpeningStep(draft?.openingStep);
   interiorStep = restoreInteriorStep(draft?.interiorStep);
+  balconyStep = typeof draft?.balconyStep?.openingId === "string"
+    ? { openingId: draft.balconyStep.openingId, asking: draft.balconyStep.asking === true } : null;
   activeRoomWall = entrance.step === "thickness" ? null
     : entrance.step === "anchor" ? null : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
@@ -916,12 +934,18 @@ function roomBox(canvas, room) {
   const band = drawingBand(canvas, margin);
   const width = room.walls[0].length_m;
   const height = room.walls[1].length_m;
-  const scale = Math.min((canvas.width - 2 * margin) / width, band.height / height);
-  const drawWidth = width * scale;
-  const drawHeight = height * scale;
-  const left = (canvas.width - drawWidth) / 2;
-  const top = band.top + (band.height - drawHeight) / 2;
-  return { left, top, right: left + drawWidth, bottom: top + drawHeight, scale, width, height };
+  // A balcony stands outside the room: the drawing makes room for it.
+  let [minX, maxX, minY, maxY] = [0, width, 0, height];
+  for (const { points } of roomBalconies(room)) {
+    for (const point of points) {
+      const [x, y] = roomLocalPoint(room, point);
+      [minX, maxX, minY, maxY] = [Math.min(minX, x), Math.max(maxX, x), Math.min(minY, y), Math.max(maxY, y)];
+    }
+  }
+  const scale = Math.min((canvas.width - 2 * margin) / (maxX - minX), band.height / (maxY - minY));
+  const left = (canvas.width - (maxX - minX) * scale) / 2 - minX * scale;
+  const bottom = band.top + (band.height - (maxY - minY) * scale) / 2 + maxY * scale;
+  return { left, top: bottom - height * scale, right: left + width * scale, bottom, scale, width, height };
 }
 function openingSegment(box, wallIndex, opening) {
   const start = opening.offset_m * box.scale;
@@ -964,6 +988,71 @@ function drawOpeningSymbol(context, segment, opening, fieldColor) {
   context.moveTo(x1 - nx * jamb, y1 - ny * jamb); context.lineTo(x1 + nx * jamb, y1 + ny * jamb);
   context.moveTo(x2 - nx * jamb, y2 - ny * jamb); context.lineTo(x2 + nx * jamb, y2 + ny * jamb);
   context.stroke();
+}
+
+// The balconies of a room (Bolat, 08.10.2026), each with the wall of its door and its corners on the plan.
+function roomBalconies(room) {
+  return (room?.balconies ?? []).flatMap((balcony) => {
+    try {
+      const opening = room.openings.find((item) => item.id === balcony.opening_id);
+      const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
+      return [{ balcony, wallIndex, points: balconyPoints(room, balcony) }];
+    } catch {
+      return [];
+    }
+  });
+}
+// How far out of each wall its balconies reach, in metres: the wall's length is written beyond them.
+function balconyReach(room) {
+  const reach = room.walls.map(() => 0);
+  for (const { balcony, wallIndex } of roomBalconies(room)) {
+    reach[wallIndex] = Math.max(reach[wallIndex], wallThickness(room, room.walls[wallIndex]) + balcony.depth_m);
+  }
+  return reach;
+}
+function balconyLabel(balcony) {
+  return `${formatLength(balcony.width_m)} × ${formatLength(balcony.depth_m)}`;
+}
+// The balcony symbol until the technicians' own is known: a slab outside the wall with a double line of railing on its
+// three free sides, no words (Bolat, 08.10.2026). Points: along the wall at the start, at the end, then out at the far edge (canvas pixels).
+function drawBalconySymbol(context, points, { selected = false, px = 1 } = {}) {
+  const [p0, p1, p2, p3] = points;
+  const span = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  const along = [(p1[0] - p0[0]) / span(p0, p1), (p1[1] - p0[1]) / span(p0, p1)];
+  const out = [(p3[0] - p0[0]) / span(p0, p3), (p3[1] - p0[1]) / span(p0, p3)];
+  context.save();
+  context.fillStyle = selected ? uiColor("--select-bg", "#cfe0f5") : uiColor("--field", "#ffffff");
+  context.beginPath();
+  context.moveTo(p0[0], p0[1]);
+  for (const point of [p1, p2, p3]) context.lineTo(point[0], point[1]);
+  context.closePath();
+  context.fill();
+  context.strokeStyle = selected ? "#d93025" : uiColor("--nav-text", "#153e60");
+  context.lineWidth = (selected ? 4 : 2.5) * px;
+  context.beginPath();
+  context.moveTo(p1[0], p1[1]);
+  for (const point of [p2, p3, p0]) context.lineTo(point[0], point[1]);
+  context.stroke();
+  const inset = 6 * px;
+  if (span(p0, p1) > 3 * inset && span(p0, p3) > 2 * inset) {
+    const shift = (point, a, b) => [point[0] + along[0] * a + out[0] * b, point[1] + along[1] * a + out[1] * b];
+    const inner = [shift(p1, -inset, 0), shift(p2, -inset, -inset), shift(p3, inset, -inset), shift(p0, inset, 0)];
+    context.lineWidth = 1.2 * px;
+    context.beginPath();
+    context.moveTo(inner[0][0], inner[0][1]);
+    for (const point of inner.slice(1)) context.lineTo(point[0], point[1]);
+    context.stroke();
+  }
+  context.restore();
+}
+function drawRoomBalconies(canvas, room, toCanvas) {
+  const context = canvas.getContext("2d");
+  canvas.balconyShapes = [];
+  for (const { balcony, points } of roomBalconies(room)) {
+    const shape = points.map(toCanvas);
+    drawBalconySymbol(context, shape, { selected: canvas.selectedBalcony === balcony.opening_id });
+    canvas.balconyShapes.push({ openingId: balcony.opening_id, points: shape });
+  }
 }
 
 function drawInteriorSymbol(context, points, interior) {
@@ -1038,7 +1127,7 @@ function drawsOnPlan(room) {
 // Fits a room into the canvas in its plan orientation (plan coordinates, y up).
 function polygonBox(canvas, room) {
   const margin = 76;
-  const local = roomPoints(room).slice(0, -1);
+  const local = [...roomPoints(room).slice(0, -1), ...roomBalconies(room).flatMap((item) => item.points)];
   const xs = local.map((point) => point[0]);
   const ys = local.map((point) => point[1]);
   const spanX = Math.max(Math.max(...xs) - Math.min(...xs), 0.1);
@@ -1184,6 +1273,7 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
   for (const interior of room.interiors ?? []) {
     drawInteriorSymbol(context, interiorPoints(room, interior).map((point) => roomPointToCanvas(room, box, point)), interior);
   }
+  drawRoomBalconies(canvas, room, (point) => roomPointToCanvas(room, box, point));
   for (const opening of room.openings ?? []) {
     const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
     if (wallIndex < 0) continue;
@@ -1194,13 +1284,15 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
   context.textBaseline = "middle";
   context.fillStyle = text;
   context.font = "700 20px system-ui";
+  const reach = balconyReach(room);
   room.walls.forEach((wall, wallIndex) => {
     if (wall.source === "unmeasured") return;
     const a = points[wallIndex];
     const b = points[wallIndex + 1];
     const normal = outward(a, b);
-    const x = (a[0] + b[0]) / 2 + normal[0] * 30;
-    const y = (a[1] + b[1]) / 2 + normal[1] * 30;
+    const away = 30 + reach[wallIndex] * box.scale;
+    const x = (a[0] + b[0]) / 2 + normal[0] * away;
+    const y = (a[1] + b[1]) / 2 + normal[1] * away;
     context.fillText(formatLength(wall.length_m), x, y);
     canvas.lengthHitboxes = canvas.lengthHitboxes ?? [];
     canvas.lengthHitboxes.push({ wallIndex, left: x - 46, right: x + 46, top: y - 30, bottom: y + 30 });
@@ -1242,6 +1334,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   context.fillRect(0, 0, canvas.width, canvas.height);
   canvas.dimensionHitboxes = [];
   canvas.lengthHitboxes = [];
+  canvas.balconyShapes = [];
   if (!room) return;
   if (drawsOnPlan(room)) {
     drawPolygonRoom(canvas, room, selectedWall, attention, letters);
@@ -1268,6 +1361,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
       interior,
     );
   }
+  drawRoomBalconies(canvas, room, (point) => roomPointToCanvas(room, box, point));
 
   for (const opening of room.openings ?? []) {
     const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
@@ -1280,11 +1374,12 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   context.textAlign = "center";
   context.textBaseline = "middle";
   const format = (value) => value.toFixed(2).replace(".", ",");
+  const reach = balconyReach(room).map((value) => value * box.scale);
   const labels = [
-    { wall: 0, x: (box.left + box.right) / 2, y: box.bottom + 34, rotate: 0, input: inputIds[0] },
-    { wall: 1, x: box.right + 36, y: (box.top + box.bottom) / 2, rotate: Math.PI / 2, input: inputIds[1] },
-    { wall: 2, x: (box.left + box.right) / 2, y: box.top - 30, rotate: 0, input: inputIds[0] },
-    { wall: 3, x: box.left - 36, y: (box.top + box.bottom) / 2, rotate: -Math.PI / 2, input: inputIds[1] },
+    { wall: 0, x: (box.left + box.right) / 2, y: box.bottom + 34 + reach[0], rotate: 0, input: inputIds[0] },
+    { wall: 1, x: box.right + 36 + reach[1], y: (box.top + box.bottom) / 2, rotate: Math.PI / 2, input: inputIds[1] },
+    { wall: 2, x: (box.left + box.right) / 2, y: box.top - 30 - reach[2], rotate: 0, input: inputIds[0] },
+    { wall: 3, x: box.left - 36 - reach[3], y: (box.top + box.bottom) / 2, rotate: -Math.PI / 2, input: inputIds[1] },
   ];
   for (const label of labels) {
     const wall = room.walls[label.wall];
@@ -1310,26 +1405,9 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
     drawCornerLetters(context, corners, canvasOutward(corners));
   }
 }
-// The outer face of a room's walls: every wall line moved out by its own thickness, neighbours joined where the moved
-// lines cross (the desktop's outer_points does the same).
+// The outer face of a room's walls (model.js; the desktop's outer_points does the same).
 function outerOutline(room) {
-  const corners = roomPoints(room).slice(0, -1);
-  const outwardOf = canvasOutward(corners);
-  const lines = corners.map((a, index) => {
-    const b = corners[(index + 1) % corners.length];
-    const length = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    const out = outwardOf(a, b);
-    const thickness = wallThickness(room, room.walls[index]);
-    return { point: [a[0] + out[0] * thickness, a[1] + out[1] * thickness], unit: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] };
-  });
-  return lines.map((line, index) => {
-    const previous = lines[(index + lines.length - 1) % lines.length];
-    const cross = previous.unit[0] * line.unit[1] - previous.unit[1] * line.unit[0];
-    if (Math.abs(cross) < 1e-9) return line.point;
-    const delta = [line.point[0] - previous.point[0], line.point[1] - previous.point[1]];
-    const along = (delta[0] * line.unit[1] - delta[1] * line.unit[0]) / cross;
-    return [previous.point[0] + previous.unit[0] * along, previous.point[1] + previous.unit[1] * along];
-  });
+  return roomOuterPolygon(room);
 }
 function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   const context = canvas.getContext("2d");
@@ -1348,7 +1426,9 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   try { shown = inferPartitionThickness(pkg); } catch { /* an unfinished plan is drawn as it is */ }
   const outers = shown.rooms.map(outerOutline);
   const roomPointSets = pkg.rooms.map((room) => roomPoints(room));
-  const points = [...roomPointSets.flatMap((room) => room.slice(0, -1)), ...outers.flat()];
+  const balconies = shown.rooms.map(roomBalconies);
+  const points = [...roomPointSets.flatMap((room) => room.slice(0, -1)), ...outers.flat(),
+    ...balconies.flat().flatMap((item) => item.points)];
   const minX = Math.min(...points.map((point) => point[0]));
   const maxX = Math.max(...points.map((point) => point[0]));
   const minY = Math.min(...points.map((point) => point[1]));
@@ -1432,6 +1512,9 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
       context.stroke();
     }
   });
+  balconies.flat().forEach(({ points: corners }) => {
+    drawBalconySymbol(context, corners.map(transform), { px });
+  });
   // Places the app does not understand: a red numbered mark, the same number as in the list under the plan.
   // One fixed red with white digits reads in both themes.
   // The canvas is in device pixels: the mark is sized in screen points so it reads on a phone.
@@ -1471,6 +1554,12 @@ function hintText() {
   }
   if (currentScreen === "room") return elements.roomTip.textContent;
   if (currentScreen === "openings") {
+    if (balconyStep?.asking) {
+      return "За дверью балкон. Назовите его размер, например «метр на два»: меньшее число — насколько он выступает от стены.";
+    }
+    if (balconyStep) {
+      return "Балкон стоит по центру двери. Стоит не там — нажмите снаружи вдоль стены, где он на самом деле: у угла или выступающей стены он упрётся в неё. Размер — красная кнопка.";
+    }
     const placing = stepOpening();
     const of = placing ? OPENING_GENITIVE[placing.kind] : "";
     if (openingStep?.step === "kind") {
@@ -1515,7 +1604,7 @@ function hintText() {
     if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
       return "Стена с дверью другой длины. Нажмите «До двери» и назовите расстояние от угла до двери.";
     }
-    return "Комната за дверью. Нажмите на мигающую красную стену и назовите её длину. Если стена с дверью другой длины, сначала нажмите на неё.";
+    return "Комната за дверью. Нажмите на мигающую красную стену и назовите её длину. Если стена с дверью другой длины, сначала нажмите на неё. За дверью балкон — кнопка «Балкон».";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
     if (validationIssues(packageData).length) return "Нажмите на замечание — откроется место, где его исправить.";
@@ -2151,6 +2240,11 @@ function connectedRoomIndex(roomIndex, openingId) {
 function goThroughOpening(roomIndex, openingId) {
   const behind = connectedRoomIndex(roomIndex, openingId);
   openingStep = null;
+  if (balconyForOpening(packageData.rooms[roomIndex], openingId)) {
+    currentRoomIndex = roomIndex;
+    selectBalcony(openingId);
+    return;
+  }
   if (behind < 0) {
     openAdjacent(roomIndex, openingId);
     return;
@@ -2188,6 +2282,49 @@ function openAdjacent(roomIndex, openingId) {
   selectVoiceTargetById("adjacentSecondLength");
   setTimeout(startContextVoice, 0);
 }
+// A balcony behind a door (Bolat, 08.10.2026): «Балкон» on the screen of the room behind the door asks its size
+// ("метр на два", the smaller number is how far it stands out); it stands in the middle of the door and is moved by a tap
+// outside along the wall, where it stops against a wall that stands out.
+function selectBalcony(openingId) {
+  clearOpeningEdit(false);
+  openingStep = null;
+  balconyStep = { openingId, asking: false };
+  if (currentScreen === "openings") renderOpenings();
+  else showScreen("openings");
+  schedulePersist();
+}
+function askBalconySize() {
+  if (!balconyStep) return;
+  balconyStep = { ...balconyStep, asking: true };
+  renderOpenings();
+  if (voiceListening) stopContextVoice();
+  selectVoiceTargetById("balconySize");
+  if (voiceController.capability().available) startContextVoice();
+  else elements.balconySize.focus();
+}
+function syncBalcony(room) {
+  // Placing or changing an opening ends the balcony's selection.
+  if (openingStep) balconyStep = null;
+  if (balconyStep && !room.openings.some((item) => item.id === balconyStep.openingId)) balconyStep = null;
+  const balcony = balconyStep ? balconyForOpening(room, balconyStep.openingId) : null;
+  if (balconyStep && !balconyStep.asking && !balcony) balconyStep = null;
+  elements.balconyBar.hidden = !balconyStep?.asking;
+  elements.balconyActions.hidden = !balconyStep || balconyStep.asking;
+  if (balcony) elements.balconyText.textContent = `Балкон ${balconyLabel(balcony)} ?`;
+}
+// Where along the wall of the selected balcony a tap outside the room is, or null when it is not on its side.
+function balconyTapAlong(canvas, room, x, y) {
+  const opening = room.openings.find((item) => item.id === balconyStep?.openingId);
+  if (!opening || !balconyForOpening(room, opening.id)) return null;
+  const outline = canvasRoomOutline(canvas, room);
+  if (pointInPolygon([x, y], outline)) return null;
+  const wallIndex = openingWallIndex(room, opening);
+  const wall = room.walls[wallIndex];
+  const [sx, sy, ex, ey] = canvasWallSegment(canvas, room, wallIndex, { offset_m: 0, width_m: wall.length_m });
+  const out = canvasOutward(outline)([sx, sy], [ex, ey]);
+  if ((x - sx) * out[0] + (y - sy) * out[1] <= 0) return null;
+  return ((x - sx) * (ex - sx) + (y - sy) * (ey - sy)) / ((ex - sx) ** 2 + (ey - sy) ** 2 || 1) * wall.length_m;
+}
 function renderOpenings() {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
@@ -2221,6 +2358,8 @@ function renderOpenings() {
     drawPlan(elements.openingOverviewCanvas, packageData);
   }
   elements.openingCanvas.topReserve = reserveUnder(elements.openingCanvas, elements.openingOverviewCanvas);
+  syncBalcony(room);
+  elements.openingCanvas.selectedBalcony = balconyStep?.openingId ?? null;
   cancelAnimationFrame(openingPulseFrame);
   const draw = () => {
     if (openingStep?.step === "kind" || guided) {
@@ -2307,7 +2446,8 @@ function renderOpenings() {
       transition.className = "secondary compact";
       // A door into a measured room leads there; one into an unmeasured room starts measuring it.
       const behind = connectedRoomIndex(currentRoomIndex, opening.id);
-      transition.textContent = behind >= 0 ? `В «${packageData.rooms[behind].name}»` : "Войти";
+      transition.textContent = behind >= 0 ? `В «${packageData.rooms[behind].name}»`
+        : balconyForOpening(room, opening.id) ? "Балкон" : "Войти";
       transition.addEventListener("click", () => goThroughOpening(currentRoomIndex, opening.id));
       actions.append(transition);
     }
@@ -3928,6 +4068,53 @@ elements.finishButton.addEventListener("click", async () => {
     showError(error);
   }
 });
+elements.adjacentBalconyButton.addEventListener("click", () => {
+  const target = pendingAdjacent;
+  if (!target) return;
+  if (voiceListening) stopContextVoice();
+  pendingAdjacent = null;
+  pendingShape = null;
+  currentRoomIndex = target.roomIndex;
+  balconyStep = { openingId: target.openingId, asking: true };
+  showScreen("openings");
+  askBalconySize();
+  persist();
+});
+elements.balconySize.addEventListener("change", async () => {
+  const raw = elements.balconySize.value.trim();
+  if (!balconyStep || !raw) return;
+  try {
+    const [firstM, secondM] = spokenBalcony(raw);
+    const balcony = balconyForOpening(packageData.rooms[currentRoomIndex], balconyStep.openingId);
+    packageData = balcony
+      ? updateBalconyInPackage(packageData, currentRoomIndex, balcony.id, { firstM, secondM })
+      : addBalconyToPackage(packageData, currentRoomIndex, balconyStep.openingId, { firstM, secondM });
+  } catch (error) {
+    showError(error);
+    return;
+  }
+  clearError();
+  elements.balconySize.value = "";
+  balconyStep = { openingId: balconyStep.openingId, asking: false };
+  renderOpenings();
+  syncHint();
+  await persist();
+});
+elements.balconyPrompt.addEventListener("click", askBalconySize);
+elements.balconyRemoveButton.addEventListener("click", async () => {
+  const balcony = balconyStep && balconyForOpening(packageData.rooms[currentRoomIndex], balconyStep.openingId);
+  if (!balcony) return;
+  try {
+    packageData = removeBalconyFromPackage(packageData, currentRoomIndex, balcony.id);
+  } catch (error) {
+    showError(error);
+    return;
+  }
+  balconyStep = null;
+  renderOpenings();
+  syncHint();
+  await persist();
+});
 elements.adjacentBackButton.addEventListener("click", () => {
   currentRoomIndex = pendingAdjacent?.roomIndex ?? currentRoomIndex;
   pendingAdjacent = null;
@@ -4181,6 +4368,31 @@ elements.openingCanvas.addEventListener("click", async (event) => {
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
   // A length label is outside its wall: only a tap outside the room and clear of the wall line corrects the number.
   // Its box used to reach over the wall, and a tap meant for a door opened "новая длина" with the microphone.
+  // A balcony: a tap on it selects it; with one selected, a tap outside along its wall moves it there.
+  const balconyHit = openingStep ? null
+    : (elements.openingCanvas.balconyShapes ?? []).find((shape) => pointInPolygon([x, y], shape.points));
+  if (balconyHit) {
+    selectBalcony(balconyHit.openingId);
+    return;
+  }
+  const balconyAlong = openingStep || balconyStep?.asking ? null : balconyTapAlong(elements.openingCanvas, room, x, y);
+  if (balconyAlong !== null) {
+    const balcony = balconyForOpening(room, balconyStep.openingId);
+    try {
+      packageData = updateBalconyInPackage(packageData, currentRoomIndex, balcony.id, { centerM: balconyAlong });
+    } catch (error) {
+      showError(error);
+      return;
+    }
+    clearError();
+    renderOpenings();
+    await persist();
+    return;
+  }
+  if (balconyStep) {
+    balconyStep = null;
+    renderOpenings();
+  }
   const outline = canvasRoomOutline(elements.openingCanvas, room);
   const clearOfWalls = !pointInPolygon([x, y], outline) && outline.every((point, index) =>
     distanceToCanvasSegment(x, y, point, outline[(index + 1) % outline.length]) >= 18);
@@ -4220,7 +4432,7 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     // The entrance leads outside and has no room behind it.
     if (isEntranceOpening(currentRoomIndex, hit)) return;
     openingStep = null;
-    if (hit.kind === "door" || connectionForOpening(packageData, currentRoomIndex, hit.id)) {
+    if (hit.kind === "door" || connectionForOpening(packageData, currentRoomIndex, hit.id) || balconyForOpening(room, hit.id)) {
       goThroughOpening(currentRoomIndex, hit.id);
     } else {
       // A window or passage tapped again is placed again by the same steps.

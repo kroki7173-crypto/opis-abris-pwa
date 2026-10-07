@@ -642,6 +642,205 @@ function validateInteriors(room, wallIds) {
   }
 }
 
+// A balcony behind a door (Bolat, 08.10.2026): technicians do not measure it as a room, they say "метр на два" and it
+// is drawn by its symbol. The smaller number is how far it stands out, the larger its length along the wall. It
+// belongs to its door: `door_offset_m` is from the balcony's start edge to the door's start edge along the wall, so
+// it moves with the door and with any correction of the wall. It stands on the outer face of the door's wall.
+export const BALCONY_LIMITS = { width: [0.3, 100], depth: [0.3, 30] };
+const BALCONY_SNAP_M = 0.3;
+
+export function balconySize(firstM, secondM) {
+  const first = positiveNumber(firstM, "Размер балкона");
+  const second = positiveNumber(secondM, "Размер балкона");
+  const width = Math.max(first, second);
+  const depth = Math.min(first, second);
+  if (width > BALCONY_LIMITS.width[1] || depth < BALCONY_LIMITS.depth[0] || depth > BALCONY_LIMITS.depth[1]) {
+    throw new Error("Размер балкона: вынос от 0,3 до 30 м, длина до 100 м.");
+  }
+  return { width_m: width, depth_m: depth };
+}
+
+export function balconyForOpening(room, openingId) {
+  return (room?.balconies ?? []).find((item) => item.opening_id === openingId) ?? null;
+}
+
+function balconyFrame(room, opening) {
+  const wall = roomWalls(room).find((item) => item.wall.id === opening.wall_id);
+  if (!wall) throw new Error("Балкон стоит у отсутствующей стены.");
+  const base = wallThickness(room, wall.wall);
+  return {
+    wall,
+    base,
+    at: (along, out) => [
+      wall.start[0] + wall.unit[0] * along + wall.outward[0] * out,
+      wall.start[1] + wall.unit[1] * along + wall.outward[1] * out,
+    ],
+  };
+}
+
+// The balcony's corners: along the wall at its start, at its end, then out at the far edge.
+export function balconyPoints(room, balcony) {
+  const opening = room.openings.find((item) => item.id === balcony.opening_id);
+  if (!opening) throw new Error("Балкон стоит у отсутствующей двери.");
+  const { at, base } = balconyFrame(room, opening);
+  const start = opening.offset_m - balcony.door_offset_m;
+  const end = start + balcony.width_m;
+  return [at(start, base), at(end, base), at(end, base + balcony.depth_m), at(start, base + balcony.depth_m)];
+}
+
+// The outer face of a room's walls: every wall line moved out by its own thickness, neighbours joined where the moved
+// lines cross (the desktop's outer_points does the same).
+export function roomOuterPolygon(room) {
+  const lines = roomWalls(room).map((wall) => {
+    const thickness = wallThickness(room, wall.wall);
+    return { point: [wall.start[0] + wall.outward[0] * thickness, wall.start[1] + wall.outward[1] * thickness], unit: wall.unit };
+  });
+  return lines.map((line, index) => {
+    const previous = lines[(index + lines.length - 1) % lines.length];
+    const cross = previous.unit[0] * line.unit[1] - previous.unit[1] * line.unit[0];
+    if (Math.abs(cross) < 1e-9) return line.point;
+    const delta = [line.point[0] - previous.point[0], line.point[1] - previous.point[1]];
+    const along = (delta[0] * line.unit[1] - delta[1] * line.unit[0]) / cross;
+    return [previous.point[0] + previous.unit[0] * along, previous.point[1] + previous.unit[1] * along];
+  });
+}
+
+// Where along the door's wall the balcony starts. It is put with its middle at `centerM` (the door's middle by
+// default) and always keeps the whole door. Near an outer corner of the room it is flush with it; where a wall stands
+// out (this room's or a neighbour's) it stops against it instead of going into it (Bolat, 08.10.2026).
+function balconyStart(pkg, roomIndex, opening, width, depth, centerM) {
+  const room = pkg.rooms[roomIndex];
+  const { wall, base, at } = balconyFrame(room, opening);
+  const low = opening.offset_m + opening.width_m - width;
+  const high = opening.offset_m;
+  const clamp = (value) => Math.min(high, Math.max(low, value));
+  let start = clamp((centerM ?? opening.offset_m + opening.width_m / 2) - width / 2);
+  const walls = room.walls;
+  const before = wallThickness(room, walls[(wall.index + walls.length - 1) % walls.length]);
+  const after = wallThickness(room, walls[(wall.index + 1) % walls.length]);
+  for (const flush of [-before, wall.length + after - width]) {
+    if (Math.abs(start - flush) <= BALCONY_SNAP_M && flush >= low - 1e-9 && flush <= high + 1e-9) start = flush;
+  }
+  const outlines = pkg.rooms.map((item) => roomOuterPolygon(item));
+  // A tenth of a millimetre in from every side: a balcony that only touches a wall is free.
+  const IN = 0.0001;
+  const blocked = (value) => {
+    const shape = [at(value + IN, base + IN), at(value + width - IN, base + IN),
+      at(value + width - IN, base + depth - IN), at(value + IN, base + depth - IN)];
+    return outlines.some((outline) => polygonInteriorsOverlap(shape, outline));
+  };
+  if (!blocked(start)) return start;
+  const STEP = 0.01;
+  for (let step = 1; step * STEP <= high - low + STEP; step += 1) {
+    for (const sign of [-1, 1]) {
+      const free = clamp(start + sign * step * STEP);
+      if (blocked(free)) continue;
+      // Right against what stands in the way, not up to a centimetre short of it.
+      let inside = clamp(free - sign * STEP);
+      let outside = free;
+      for (let round = 0; round < 14 && blocked(inside); round += 1) {
+        const middle = (inside + outside) / 2;
+        if (blocked(middle)) inside = middle;
+        else outside = middle;
+      }
+      const found = blocked(inside) ? outside : inside;
+      // On whole millimetres, on the free side.
+      return clamp(sign > 0 ? Math.ceil(found * 1000 - 1e-6) / 1000 : Math.floor(found * 1000 + 1e-6) / 1000);
+    }
+  }
+  return start;
+}
+
+function setBalcony(pkg, roomIndex, openingId, size, centerM, id) {
+  const room = pkg?.rooms?.[roomIndex];
+  const opening = room?.openings?.find((item) => item.id === openingId);
+  if (!opening) throw new Error("Дверь балкона не найдена.");
+  if (opening.kind === "window") throw new Error("Балкон ставится у двери или проёма, не у окна.");
+  if (connectionForOpening(pkg, roomIndex, openingId)) throw new Error("За этой дверью уже обмерена комната.");
+  const { width_m: width, depth_m: depth } = size;
+  if (width < opening.width_m - 1e-9) {
+    throw new Error(`Балкон ${roundMetres(width)} м уже двери ${roundMetres(opening.width_m)} м. Назовите размер ещё раз.`);
+  }
+  const start = balconyStart(pkg, roomIndex, opening, width, depth, centerM);
+  const balcony = {
+    id, opening_id: openingId,
+    door_offset_m: Math.min(roundMetres(width - opening.width_m), Math.max(0, Math.round((opening.offset_m - start) * 1000) / 1000)),
+    width_m: width, depth_m: depth,
+  };
+  const next = structuredClone(pkg);
+  const target = next.rooms[roomIndex];
+  target.balconies = [...(target.balconies ?? []).filter((item) => item.id !== id && item.opening_id !== openingId), balcony];
+  next.updated_at = new Date().toISOString();
+  validatePackage(next);
+  return next;
+}
+
+export function addBalconyToPackage(pkg, roomIndex, openingId, { firstM, secondM }) {
+  return setBalcony(pkg, roomIndex, openingId, balconySize(firstM, secondM), null, identifier("balcony"));
+}
+
+// A new size keeps the balcony's middle where it was; `centerM` (along the wall) moves it there.
+export function updateBalconyInPackage(pkg, roomIndex, balconyId, { firstM, secondM, centerM } = {}) {
+  const room = pkg?.rooms?.[roomIndex];
+  const balcony = room?.balconies?.find((item) => item.id === balconyId);
+  if (!balcony) throw new Error("Балкон не найден.");
+  const opening = room.openings.find((item) => item.id === balcony.opening_id);
+  const size = firstM === undefined ? { width_m: balcony.width_m, depth_m: balcony.depth_m } : balconySize(firstM, secondM);
+  const middle = centerM ?? opening.offset_m - balcony.door_offset_m + balcony.width_m / 2;
+  return setBalcony(pkg, roomIndex, balcony.opening_id, size, middle, balcony.id);
+}
+
+export function removeBalconyFromPackage(pkg, roomIndex, balconyId) {
+  const room = pkg?.rooms?.[roomIndex];
+  if (!room?.balconies?.some((item) => item.id === balconyId)) throw new Error("Балкон не найден.");
+  const next = structuredClone(pkg);
+  next.rooms[roomIndex].balconies = room.balconies.filter((item) => item.id !== balconyId);
+  next.updated_at = new Date().toISOString();
+  validatePackage(next);
+  return next;
+}
+
+// After any correction a balcony still holds its whole door; one whose door went away or became a window goes too.
+function fitBalconies(pkg) {
+  for (const room of pkg.rooms ?? []) {
+    if (!room.balconies) continue;
+    room.balconies = room.balconies.filter((balcony) => {
+      const opening = room.openings.find((item) => item.id === balcony.opening_id);
+      if (!opening || opening.kind === "window") return false;
+      balcony.width_m = Math.max(balcony.width_m, opening.width_m);
+      balcony.door_offset_m = Math.min(Math.max(0, balcony.door_offset_m), roundMetres(balcony.width_m - opening.width_m));
+      return true;
+    });
+  }
+  return pkg;
+}
+
+function validateBalconies(room) {
+  const balconies = room.balconies ?? [];
+  if (!Array.isArray(balconies) || balconies.length > 50) throw new Error("Слишком много балконов.");
+  const ids = new Set();
+  const doors = new Set();
+  for (const balcony of balconies) {
+    requiredText(balcony.id, "Номер балкона", 80);
+    if (ids.has(balcony.id)) throw new Error("Номера балконов не должны повторяться.");
+    ids.add(balcony.id);
+    const opening = room.openings.find((item) => item.id === balcony.opening_id);
+    if (!opening || opening.kind === "window") throw new Error("Балкон ссылается на отсутствующую дверь.");
+    if (doors.has(opening.id)) throw new Error("У одной двери один балкон.");
+    doors.add(opening.id);
+    const width = Number(balcony.width_m);
+    const depth = Number(balcony.depth_m);
+    const offset = Number(balcony.door_offset_m);
+    if (!Number.isFinite(width) || width < BALCONY_LIMITS.width[0] || width > BALCONY_LIMITS.width[1] ||
+        !Number.isFinite(depth) || depth < BALCONY_LIMITS.depth[0] || depth > BALCONY_LIMITS.depth[1]) {
+      throw new Error("Размер балкона: вынос от 0,3 до 30 м, длина до 100 м.");
+    }
+    if (!Number.isFinite(offset) || offset < 0 || offset + opening.width_m > width + 1e-6) {
+      throw new Error("Дверь балкона должна быть целиком на балконе.");
+    }
+  }
+}
+
 export const OPENING_PRESETS = {
   door: [0.6, 0.7, 0.8, 0.9, 1.0],
   window: [0.6, 0.9, 1.3, 1.5, 1.8],
@@ -817,7 +1016,7 @@ export function relayoutRooms(pkg) {
   return next;
 }
 function finishEdit(next) {
-  const result = relayoutRooms(next);
+  const result = fitBalconies(relayoutRooms(next));
   result.updated_at = new Date().toISOString();
   validatePackage(result);
   return result;
@@ -1317,6 +1516,7 @@ export function validatePackage(pkg) {
       }
     }
     validateInteriors(room, wallIds);
+    validateBalconies(room);
     rooms.set(room.id, { room, wallIds, openingIds });
   }
 
@@ -1476,6 +1676,16 @@ export function validatePackage(pkg) {
       throw new Error("Дверная привязка новой комнаты смещена.");
     }
   }
+  // A balcony is outside: its door leads into no room, and its wall is not shared with one.
+  for (const { room } of rooms.values()) {
+    for (const balcony of room.balconies ?? []) {
+      const opening = room.openings.find((item) => item.id === balcony.opening_id);
+      if (connectedOpenings.has(room.id + ":" + opening.id) ||
+          (wallConnectionModes.get(room.id + ":" + opening.wall_id) ?? []).includes("full_wall")) {
+        throw new Error("Балкон стоит у двери в другую комнату. Уберите балкон или комнату.");
+      }
+    }
+  }
   return pkg;
 }
 
@@ -1607,6 +1817,8 @@ export function planProblems(pkg) {
     for (const opening of doors) {
       if (roomIndex === 0 && opening.id === room.openings[0]?.id) continue;
       if (connectionForOpening(pkg, roomIndex, opening.id)) continue;
+      // A door onto a balcony leads outside: nothing is measured behind it.
+      if (balconyForOpening(room, opening.id)) continue;
       const wall = room.walls.find((item) => item.id === opening.wall_id);
       const thickness = wallThickness(room, wall);
       // Is there a room just behind this door, measured through another door?

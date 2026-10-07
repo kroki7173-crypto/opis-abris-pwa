@@ -54,7 +54,20 @@
         "right_angles": { "type": "boolean" },
         "walls": { "type": "array", "minItems": 3, "maxItems": 500, "items": { "$ref": "#/$defs/wall" } },
         "openings": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/opening" } },
-        "interiors": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/interior" } }
+        "interiors": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/interior" } },
+        "balconies": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/balcony" } }
+      }
+    },
+    "balcony": {
+      "description": "A balcony outside a door of this room (Bolat, 08.10.2026): not measured as a room, said as «метр на два». It stands on the outer face of the door's wall; door_offset_m is from the balcony's start edge to the door's start edge along the wall.",
+      "type": "object",
+      "required": ["id", "opening_id", "door_offset_m", "width_m", "depth_m"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "opening_id": { "$ref": "#/$defs/id" },
+        "door_offset_m": { "type": "number", "minimum": 0, "maximum": 100 },
+        "width_m": { "type": "number", "minimum": 0.3, "maximum": 100 },
+        "depth_m": { "type": "number", "minimum": 0.3, "maximum": 30 }
       }
     },
     "interior": {
