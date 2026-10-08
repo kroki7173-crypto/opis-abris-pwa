@@ -1186,6 +1186,49 @@ export function setWallLength(pkg, roomIndex, wallIndex, lengthM) {
   return finishEdit(next);
 }
 
+// The interior angle at every corner, A first, in the walking order of the stored (counter-clockwise) room.
+export function roomInteriorAngles(room) {
+  const count = room.walls.length;
+  return room.walls.map((wall, corner) => {
+    const previous = room.walls[(corner + count - 1) % count];
+    const turn = ((wall.angle_deg - previous.angle_deg + 540) % 360) - 180;
+    return Math.round((180 - turn) * 1e6) / 1e6;
+  });
+}
+
+// A corner said wrong is corrected like a length (Bolat, 08.10.2026: the angle of a free-form room was fixed through
+// the shape screen, which built the room anew and dropped its doors and the rooms behind them). The walls after the
+// corner turn by the difference; the last two walls worked out from the closure are worked out again; corner A follows
+// from the others and is not said.
+export function setCornerAngle(pkg, roomIndex, corner, degreesValue) {
+  const room = pkg?.rooms?.[roomIndex];
+  if (!room || !isPolygonRoom(room)) throw new Error("Угол правится только у комнаты непрямоугольной формы.");
+  const count = room.walls.length;
+  if (!Number.isInteger(corner) || corner < 1 || corner >= count) {
+    throw new Error("Угол A считается из остальных углов: исправьте соседний угол.");
+  }
+  const angles = roomInteriorAngles(room).slice(1);
+  angles[corner - 1] = degreesValue;
+  const inferred = [count - 2, count - 1].every((index) => room.walls[index].source === "confirmed_inferred");
+  const outline = solveOutline({
+    wallLengthsM: room.walls.map((wall, index) => (inferred && index >= count - 2 ? "" : wall.length_m)),
+    interiorAnglesDeg: angles,
+    baseAngleDeg: room.walls[0].angle_deg,
+  });
+  if (outline.zone === "red") {
+    throw new Error("С таким углом комната не сходится: невязка " + Math.round(outline.gap_m * 100) +
+      " см больше 15 см. Проверьте угол и длины стен.");
+  }
+  const next = structuredClone(pkg);
+  const nextRoom = next.rooms[roomIndex];
+  outline.walls.forEach((wall, index) => {
+    nextRoom.walls[index].length_m = roundMetres(wall.length_m);
+    nextRoom.walls[index].angle_deg = normalAngle(wall.angle_deg);
+  });
+  nextRoom.right_angles = outline.right_angles;
+  return finishEdit(next);
+}
+
 // The wall opposite the door wall of a room behind a door named different (Bolat, 07.10.2026): the room is wider or
 // narrower than the wall it was entered through. It stays a rectangle of the named width and hangs on its door from
 // the corner it starts at; the first room does not change. Before, the opposite wall dragged the shared wall along,

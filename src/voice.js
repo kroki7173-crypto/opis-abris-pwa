@@ -134,6 +134,17 @@ export function spokenMeasurement(transcript, kind = "length") {
   return formatted(value);
 }
 
+// A corner of a free-form room is said in whole degrees: "сто тридцать пять", "135 градусов".
+export function spokenAngle(transcript) {
+  const tokens = normalizedTokens(transcript).filter((token) => !/^градус/u.test(token));
+  const raw = tokens.join(" ");
+  const value = /^\d+(?:[.,]\d+)?$/u.test(raw) ? Number(raw.replace(",", ".")) : wordsToInteger(tokens);
+  if (value === null || !(value > 0 && value < 360)) {
+    throw new Error(`Не понял угол: «${transcript}». Скажите градусы, например «сто тридцать пять».`);
+  }
+  return String(value).replace(".", ",");
+}
+
 // A balcony is said as two sizes (Bolat, 08.10.2026): "метр на два", "1,2 на 3", "1х2", "полтора на три метра".
 // Returns both numbers in metres as said; which one is the depth is decided by the model (the smaller one).
 export function spokenBalcony(transcript) {
@@ -423,7 +434,8 @@ export function createVoiceController(scope, onStatus = () => {}) {
         close();
         try {
           const value = MEASUREMENT_KINDS[mode] ? spokenMeasurement(transcript, MEASUREMENT_KINDS[mode])
-            : mode === "address" ? spokenAddress(transcript, addressLessons) : transcript;
+            : mode === "address" ? spokenAddress(transcript, addressLessons)
+              : mode === "angle" ? spokenAngle(transcript) : transcript;
           onValue(value, transcript);
           onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
           resolve({ value, transcript });

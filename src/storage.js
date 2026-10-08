@@ -45,6 +45,17 @@ export function clearDraft() {
   return transaction("readwrite", (store) => store.delete(CURRENT_KEY));
 }
 
+// The ↶ history of the open object, so that an undo survives closing the app (Codex walk 08.10.2026).
+const HISTORY_KEY = "history";
+
+export function loadHistory() {
+  return transaction("readonly", (store) => store.get(HISTORY_KEY));
+}
+
+export function saveHistory(value) {
+  return transaction("readwrite", (store) => store.put(value, HISTORY_KEY));
+}
+
 export function saveSurvey(value, savedAt = new Date().toISOString()) {
   const packageId = value?.package?.package_id;
   if (typeof packageId !== "string" || !packageId) {

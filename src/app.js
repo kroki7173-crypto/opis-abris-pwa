@@ -25,8 +25,10 @@ import {
   removeRoomFromPackage,
   roomsBehind,
   setCeilingHeight,
+  roomInteriorAngles,
   roomOuterPolygon,
   roomPoints,
+  setCornerAngle,
   setOpeningWallThickness,
   setWallLength,
   solveOutline,
@@ -41,7 +43,9 @@ import {
   deleteSurvey,
   listSurveys,
   loadDraft,
+  loadHistory,
   saveDraft,
+  saveHistory,
   saveSurvey,
 } from "./storage.js";
 import {
@@ -165,6 +169,8 @@ let openingAnchors = {};
 let balconyStep = null;
 const OPENING_DEFAULT_WIDTH = { door: 0.8, window: 1.3, passage: 0.9, balcony: 0.8 };
 const OPENING_GENITIVE = { door: "двери", window: "окна", passage: "проёма", balcony: "балкона" };
+// How far from the wall of the opening being placed a tap still counts as that wall (canvas points, about a finger).
+const ASKED_WALL_REACH = 40;
 // A new opening is centred on its wall until the technician types or dictates a distance.
 let openingOffsetTouched = false;
 let planView = { zoom: 1, x: 0, y: 0 };
@@ -459,9 +465,15 @@ function setThemeControlVisible(visible, persistChoice = true) {
   if (persistChoice) storeValue(THEME_CONTROL_KEY, visible ? "1" : "0");
 }
 
+// The history belongs to the object it was written for: after "Новый замер" or another object opened, and before the
+// first record of the new one, neither arrow may bring the previous object back.
+function historyUsable() {
+  return historyCursor >= 0 && historyObject(historyEntries[historyCursor]?.value) === (packageData?.package_id ?? null);
+}
 function updateHistoryButtons() {
-  elements.undoButton.disabled = historyCursor <= 0;
-  elements.redoButton.disabled = historyCursor < 0 || historyCursor >= historyEntries.length - 1;
+  const usable = historyUsable();
+  elements.undoButton.disabled = !usable || historyCursor <= 0;
+  elements.redoButton.disabled = !usable || historyCursor >= historyEntries.length - 1;
 }
 // ↶ is an eraser for what was written down (Bolat, 08.10.2026: it jumped between screens and needed several presses
 // for one wrong number). Only the record counts: the plan, the first room's steps and sizes, the shape being drawn.
@@ -477,8 +489,16 @@ function historyRecord(value) {
     sizes: [form.address, form.roomName, form.firstLength, form.secondLength, form.wallThickness],
   });
 }
+function historyObject(value) {
+  return value?.package?.package_id ?? null;
+}
 function recordHistory(value = draftValue()) {
   if (historyRestoring) return;
+  // ↶ undoes within one object: another object opened (or a new one started) begins its own history.
+  if (historyCursor >= 0 && historyObject(historyEntries[historyCursor]?.value) !== historyObject(value)) {
+    historyEntries = [];
+    historyCursor = -1;
+  }
   const record = historyRecord(value);
   if (historyCursor >= 0 && historyEntries[historyCursor]?.record === record) {
     // The same record seen from another screen or step: the entry keeps the latest view of it.
@@ -491,7 +511,35 @@ function recordHistory(value = draftValue()) {
   historyCursor = historyEntries.length - 1;
   updateHistoryButtons();
 }
+// The last steps around the cursor are kept on the phone with the draft: after the app is closed and opened again,
+// ↶ still erases what was written last (Codex walk 08.10.2026). A short window: the whole draft is in every step.
+const HISTORY_KEPT_BACK = 12;
+const HISTORY_KEPT_AHEAD = 3;
+function storeHistory() {
+  if (historyCursor < 0) return;
+  const start = Math.max(0, historyCursor - HISTORY_KEPT_BACK);
+  const entries = historyEntries.slice(start, historyCursor + 1 + HISTORY_KEPT_AHEAD).map((entry) => entry.value);
+  saveHistory({ version: 1, cursor: historyCursor - start, entries }).catch(() => {
+    // Only ↶ after a restart depends on it; the draft itself is saved separately.
+  });
+}
+function restoreHistory(saved, draft) {
+  const entries = Array.isArray(saved?.entries) ? saved.entries : [];
+  const cursor = saved?.cursor;
+  const object = historyObject(draft);
+  if (!object || !Number.isInteger(cursor) || cursor < 0 || cursor >= entries.length ||
+      entries.some((value) => historyObject(value) !== object)) return;
+  historyEntries = entries.map((value) => ({ record: historyRecord(value), value }));
+  historyCursor = cursor;
+  updateHistoryButtons();
+}
 const WALL_WORDS = { door: "двери", window: "окна", passage: "проёма" };
+// The corner (B and on: A follows from the others) whose angle differs between two states of one room, or -1.
+function changedCorner(old, room) {
+  if (!old || old.walls.length !== room.walls.length) return -1;
+  const before = roomInteriorAngles(old);
+  return roomInteriorAngles(room).findIndex((angle, corner) => corner > 0 && Math.abs(angle - before[corner]) > 1e-6);
+}
 // What ↶ or ↷ changed, in the technician's words: "расстояние до двери", "комната «Кухня»".
 function describeChange(from, to) {
   const before = from?.package?.rooms ?? [];
@@ -511,7 +559,10 @@ function describeChange(from, to) {
       const opening = longer.find((item) => !shorter.some((other) => other.id === item.id));
       return opening ? { door: "дверь", window: "окно", passage: "проём" }[opening.kind] ?? "проём" : "проём";
     }
-    // A wall first: its new length also moves the openings measured from its far corner.
+    // A corner first: a new angle also works out the last two walls again.
+    const corner = changedCorner(old, room);
+    if (corner > 0) return `угол ${cornerName(corner)}`;
+    // A wall then: its new length also moves the openings measured from its far corner.
     if (room.walls.some((wall, wallIndex) => Math.abs(wall.length_m - (old.walls[wallIndex]?.length_m ?? 0)) > 1e-9)) {
       return "длина стены";
     }
@@ -546,7 +597,7 @@ function showNotice(text) {
 }
 async function moveHistory(direction) {
   const nextIndex = historyCursor + direction;
-  if (nextIndex < 0 || nextIndex >= historyEntries.length) return;
+  if (!historyUsable() || nextIndex < 0 || nextIndex >= historyEntries.length) return;
   const before = draftValue();
   const snapshot = structuredClone(historyEntries[nextIndex].value);
   const what = describeChange(direction < 0 ? snapshot : before, direction < 0 ? before : snapshot);
@@ -586,13 +637,16 @@ function reaskUndone(before, snapshot) {
       return was && (Math.abs(was.offset_m - opening.offset_m) > 1e-9 || was.wall_id !== opening.wall_id);
     });
     const wallIndex = room.walls.findIndex((wall, index) => Math.abs(wall.length_m - (later.walls[index]?.length_m ?? wall.length_m)) > 1e-9);
-    if (!moved && wallIndex < 0) continue;
+    const corner = changedCorner(later, room);
+    if (!moved && wallIndex < 0 && corner < 0) continue;
     if (currentRoomIndex !== roomIndex || currentScreen !== "openings") {
       currentRoomIndex = roomIndex;
       showScreen("openings");
     }
-    // A wall length moves the openings measured from its far corner too: the wall is what was said.
-    if (wallIndex >= 0) startWallFix(wallIndex);
+    // A corner works out the last walls again and a wall length moves the openings measured from its far corner:
+    // the corner, then the wall, is what was said.
+    if (corner > 0) startAngleFix(corner);
+    else if (wallIndex >= 0) startWallFix(wallIndex);
     else fixOpeningDistance(moved.id, openingAnchorSide(room, moved));
     return;
   }
@@ -833,6 +887,9 @@ function showScreen(name) {
   if (name !== "openings") armedKind = null;
   if (name !== "interior") cancelAnimationFrame(interiorPulseFrame);
   document.documentElement.dataset.screen = name;
+  // Another object came up: its state as opened is the first record, so that its first change can be undone.
+  if (!historyRestoring && !historyUsable() && packageData?.package_id) recordHistory();
+  else updateHistoryButtons();
   if (name === "start") {
     elements.startScreen.dataset.mode = startMode;
     syncAddressStep();
@@ -938,6 +995,7 @@ async function persist() {
     await saveDraft(value);
     if (keptInCatalog(value.package)) await saveSurvey(value);
     if (!historyRestoring) recordHistory(value);
+    storeHistory();
     setSaveStatus("");
   } catch {
     setSaveStatus(SAVE_FAILED);
@@ -1379,6 +1437,9 @@ function canvasOutward(points) {
 function formatLength(value) {
   return value.toFixed(2).replace(".", ",");
 }
+function formatDegrees(value) {
+  return String(Math.round(value * 10) / 10).replace(".", ",") + "°";
+}
 function drawCornerLetters(context, corners, outward) {
   // As large as the wall lengths: on a phone the canvas is drawn at about half size.
   context.fillStyle = uiColor("--button", "#285778");
@@ -1458,6 +1519,26 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
     canvas.lengthHitboxes.push({ wallIndex, left: x - 46, right: x + 46, top: y - 30, bottom: y + 30 });
   });
   if (letters) drawCornerLetters(context, corners, outward);
+  // A free-form room has its corners written down too, the way the technician said them; a tap on the letter says
+  // the corner again (setCornerAngle). A right angle is not written: it is what a corner is without a number.
+  if (letters && isPolygonRoom(room)) {
+    const angles = roomInteriorAngles(room);
+    context.font = "700 18px system-ui";
+    context.fillStyle = text;
+    canvas.cornerHitboxes = corners.map((corner, index) => {
+      const first = outward(corners[(index + corners.length - 1) % corners.length], corner);
+      const second = outward(corner, corners[(index + 1) % corners.length]);
+      const bisector = [first[0] + second[0], first[1] + second[1]];
+      const length = Math.hypot(bisector[0], bisector[1]) || 1;
+      const at = (away) => [corner[0] + bisector[0] / length * away, corner[1] + bisector[1] / length * away];
+      if (Math.abs(angles[index] - 90) > 0.05) {
+        const [x, y] = at(56);
+        context.fillText(formatDegrees(angles[index]), x, y);
+      }
+      const [x, y] = at(30);
+      return { corner: index, x, y, radius: 30 };
+    });
+  }
 }
 // Walls end square so corners close cleanly; the wall being asked for pulses in a strong red with a glow
 // and keeps flat ends so it never rounds over its neighbours.
@@ -1494,6 +1575,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   context.fillRect(0, 0, canvas.width, canvas.height);
   canvas.dimensionHitboxes = [];
   canvas.lengthHitboxes = [];
+  canvas.cornerHitboxes = [];
   canvas.balconyShapes = [];
   if (!room) return;
   if (drawsOnPlan(room)) {
@@ -3484,6 +3566,7 @@ async function applyFix(fix, raw) {
   try {
     packageData = fix.type === "wall" ? keepEndAnchors(packageData, setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value)))
       : fix.type === "height" ? setCeilingHeight(packageData, String(value))
+      : fix.type === "angle" ? keepEndAnchors(packageData, setCornerAngle(packageData, fix.roomIndex, fix.corner, String(value)))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
     const now = entry(packageData);
@@ -3614,6 +3697,22 @@ function startWallFix(wallIndex) {
   elements.wallFixBar.hidden = false;
   selectVoiceTarget(elements.wallFixInput, "measurement",
     `новую длину стены ${cornerName(wallIndex)}–${cornerName((wallIndex + 1) % room.walls.length)}`);
+  if (voiceController.capability().available) startContextVoice();
+  else elements.wallFixInput.focus();
+}
+// A corner of a free-form room tapped by its letter is said again in degrees; corner A follows from the others.
+function startAngleFix(corner) {
+  const room = packageData.rooms[currentRoomIndex];
+  if (corner === 0) {
+    hideWallFix();
+    showNotice("Угол A считается сам из остальных углов: исправьте соседний угол.");
+    return;
+  }
+  wallFix = { type: "angle", roomIndex: currentRoomIndex, corner, value: roomInteriorAngles(room)[corner] };
+  elements.wallFixLabel.textContent = `Угол ${cornerName(corner)}, градусов:`;
+  elements.wallFixInput.value = String(Math.round(wallFix.value * 10) / 10).replace(".", ",");
+  elements.wallFixBar.hidden = false;
+  selectVoiceTarget(elements.wallFixInput, "angle", `угол ${cornerName(corner)} в градусах`);
   if (voiceController.capability().available) startContextVoice();
   else elements.wallFixInput.focus();
 }
@@ -4681,6 +4780,14 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     fixOpeningDistance(distanceLabel.openingId, distanceLabel.side);
     return;
   }
+  // The letter of a corner of a free-form room: the corner is said again (it used to be fixed only through the shape
+  // screen behind the ← arrow, which built the room anew).
+  const cornerLabel = openingStep ? null : (elements.openingCanvas.cornerHitboxes ?? [])
+    .find((box) => Math.hypot(x - box.x, y - box.y) < box.radius);
+  if (cornerLabel) {
+    startAngleFix(cornerLabel.corner);
+    return;
+  }
   // A length label is outside its wall: only a tap outside the room and clear of the wall line corrects the number.
   // Its box used to reach over the wall, and a tap meant for a door opened "новая длина" with the microphone.
   // A balcony: a tap on it selects it; with one selected, a tap outside along its wall moves it there.
@@ -4727,7 +4834,17 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     startInteriorAt(tap);
     return;
   }
-  const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
+  // While the piece of wall at a just placed opening is asked, a tap near that wall is meant for it, even at the corner
+  // where the next wall is as near (Codex walk 08.10.2026: the finger slid onto the next wall, a new opening began and
+  // the door kept the wrong distance).
+  const asked = ["side", "width", "thickness"].includes(openingStep?.step) ? stepOpening() : null;
+  const askedWall = asked ? openingWallIndex(room, asked) : -1;
+  const askedSegment = askedWall >= 0
+    ? canvasWallSegment(elements.openingCanvas, room, askedWall, { offset_m: 0, width_m: room.walls[askedWall].length_m })
+    : null;
+  const nearAsked = askedSegment &&
+    distanceToCanvasSegment(x, y, askedSegment.slice(0, 2), askedSegment.slice(2)) < ASKED_WALL_REACH;
+  const wallIndex = nearAsked ? askedWall : nearestWallIndex(elements.openingCanvas, room, x, y);
   const wall = room.walls[wallIndex];
   const hit = room.openings.find((opening) => {
     if (opening.wall_id !== wall.id) return false;
@@ -4859,6 +4976,11 @@ async function start() {
     restoreForm(draft);
     packageData = draft?.package ?? null;
     draftLoaded = true;
+    try {
+      restoreHistory(await loadHistory(), draft);
+    } catch {
+      // Without the saved history ↶ starts from now, as before.
+    }
     if (keptInCatalog(packageData)) {
       await saveSurvey({ ...draft, version: 4 });
     }
