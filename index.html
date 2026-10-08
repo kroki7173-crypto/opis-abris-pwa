@@ -32,6 +32,7 @@
     <p id="saveStatus" class="save-status" role="status" hidden></p>
     <div class="toasts">
     <p id="errorMessage" class="message error" role="alert" hidden></p>
+    <p id="undoToast" class="message notice undo-toast" role="status" hidden></p>
     <div id="voiceStatus" class="voice-status" role="status" hidden>
       <span class="voice-orb" aria-hidden="true">●</span>
       <span class="voice-copy">
@@ -98,7 +99,6 @@
     </section>
     <section id="openingsScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
-        <button id="openingsBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
         <strong>Двери и окна</strong>
         <span id="openingsRoomName" hidden></span>
       </div>
@@ -164,7 +164,6 @@
     </section>
     <section id="interiorScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
-        <button id="interiorBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
         <strong>Внутри помещения</strong>
       </div>
 
@@ -214,7 +213,6 @@
     </section>
     <section id="adjacentScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
-        <button id="adjacentBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
         <strong>Следующая комната</strong>
         <!-- A balcony is not measured as a room (Bolat, 08.10.2026): its size is said and it is drawn by its symbol. -->
         <button id="adjacentBalconyButton" class="secondary compact toolbar-end" type="button">Балкон</button>
@@ -257,7 +255,6 @@
     </section>
     <section id="shapeScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
-        <button id="shapeBackButton" class="icon-button quiet" type="button" aria-label="Назад">←</button>
         <strong>Форма комнаты</strong>
       </div>
       <p class="lead shape-lead">Идите по комнате и вводите длины стен по порядку. Для каждого угла выберите:
@@ -315,8 +312,36 @@
 
     <section id="helpScreen" class="card screen" hidden>
       <h2>Помощь</h2>
-      <p class="lead">Нажмите на нужное поле или стену, затем включите микрофон. Нажатие на число оставляет ручной ввод доступным.</p>
-      <p class="hint">Все действия автоматически сохраняются на этом устройстве.</p>
+      <div class="help-text">
+        <h3>Как мерить</h3>
+        <p>Работайте как на листе: зашли в комнату — обмерили — пошли в следующую. Вход всегда снизу.
+          Нажмите на мигающую стену и скажите её длину. Нажмите на стену, где дверь или окно, выберите
+          «Дверь», «Окно», «Проём» или «Балкон», нажмите на мигающий кусок стены у угла и скажите
+          расстояние от угла. Красная кнопка с вопросом — то, что программа ждёт сейчас: нажмите её и
+          скажите число.</p>
+        <h3>Ошиблись в цифре — коснитесь её</h3>
+        <p>Все цифры стоят на рисунке: длины стен снаружи, расстояния от угла до дверей и окон — внутри,
+          в рамке. Коснитесь неверной цифры и скажите её заново — план перестроится сам. Толщину стены у
+          двери или окна исправляют в списке под рисунком: коснитесь «стена 0,14 м».</p>
+        <h3>Отменить — стрелка вверху</h3>
+        <p>Стрелка <b>↶</b> в шапке отменяет последнюю записанную цифру или поставленную вещь и
+          показывает, что отменено. Если отменена цифра, программа сразу спрашивает её снова.
+          Стрелка <b>↷</b> возвращает отменённое.</p>
+        <h3>Другая комната</h3>
+        <p>Маленький план в углу рисунка — вся квартира. Коснитесь на нём комнаты — откроется она.
+          Коснитесь двери на рисунке — пройдёте в комнату за ней, а если там ещё не мерили, начнётся
+          её замер.</p>
+        <h3>Санузел, кладовка, колонна</h3>
+        <p>Коснитесь внутри комнаты, где они стоят, и ответьте на вопросы. Когда всё названо, программа
+          вернётся к дверям и окнам. Коснулись внутри по ошибке — коснитесь снаружи комнаты.</p>
+        <h3>Удалить</h3>
+        <p>Дверь или окно — кнопка «Удалить» в их строке под рисунком. Комнату — кнопка
+          «Удалить комнату» в самом низу. Удалили не то — стрелка ↶.</p>
+        <h3>В конце</h3>
+        <p>Нажмите «Закончить замер». Если программе что-то непонятно, места будут отмечены номерами —
+          нажмите на замечание, и откроется место, где его исправить.</p>
+        <p class="hint">Всё сохраняется на телефоне само, после каждого действия.</p>
+      </div>
     </section>
 
     <button id="issuesReturnButton" class="issues-return" type="button" hidden>← К замечаниям</button>

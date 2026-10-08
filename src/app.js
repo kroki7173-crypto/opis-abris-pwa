@@ -56,16 +56,16 @@ import { addressLesson, createVoiceController, spokenAddress, spokenBalcony, spo
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
-  "shapeBackButton", "shapeFewerButton", "shapeMoreButton", "shapeCount", "shapeCanvas",
+  "shapeFewerButton", "shapeMoreButton", "shapeCount", "shapeCanvas",
   "shapeCaption", "shapeFields", "shapeStatus", "shapeDoneButton", "shapeResetButton", "shapeMirrorButton",
   "adjacentShapeButton", "adjacentShapeNote",
   "address", "roomName", "firstLength", "secondLength", "wallThickness", "startButton", "rememberAddressButton", "addressNewButton",
   "surveyCount", "surveyEmpty", "surveyList", "shareTodayButton",
   "openingCanvas", "openingOverviewCanvas", "openingWall", "openingOffset",
-  "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList", "openingsBackButton",
+  "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList",
   "openingEditPanel", "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText", "wallLengthPrompt", "wallLengthText",
-  "interiorBackButton", "interiorCanvas", "interiorWall",
+  "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
   "interiorPartition", "interiorDoorWidth", "interiorDoorWall", "storageFields",
   "addInteriorButton", "interiorCancelEditButton", "interiorList", "interiorDoneButton",
@@ -74,9 +74,9 @@ const ids = [
   "adjacentStatus", "adjacentBindingHint", "adjacentAnchorPanel", "adjacentAnchorLead",
   "adjacentAnchorCorner", "adjacentAnchorOffset",
   "adjacentAnchorCornerButton", "adjacentAnchorCornerValue", "adjacentAnchorOffsetButton", "adjacentAnchorOffsetValue",
-  "adjacentBackButton", "createAdjacentButton", "shareButton", "editButton",
+  "createAdjacentButton", "shareButton", "editButton",
   "newSurveyButton", "newButton", "doorAnchor", "thicknessChip", "interiorAskChip", "roomTip", "roomCanvas", "planCanvas", "saveStatus",
-  "errorMessage", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
+  "errorMessage", "undoToast", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
 
   "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "hintCard", "hintText",
@@ -156,6 +156,8 @@ let openingPlacementActive = false;
 // the distance from the corner -> a door or passage asks the wall thickness and then opens the room behind it.
 // { step: "kind", wallIndex } | { step: "side", id, side } | { step: "thickness", id }
 let openingStep = null;
+// «Дверь», «Окно», «Проём» or «Балкон» pressed before a wall: the next tap on a wall places it there.
+let armedKind = null;
 // Which corner each opening was measured from ({ id: "start" | "end" }): the list shows the distance from that one.
 // Kept in the draft on the phone only; the measurement file does not carry it.
 let openingAnchors = {};
@@ -329,7 +331,13 @@ async function startContextVoice() {
       },
     });
   } catch {
-    // Голосовая ошибка уже показана в общей плашке; ручной ввод остаётся доступным.
+    // Голосовая ошибка уже показана в общей плашке; ручной ввод остаётся доступным. The balcony size has its own
+    // field in place of the red button: without a microphone it is shown to type into (Codex walk 08.10.2026).
+    if (input === elements.balconySize && currentScreen === "openings") {
+      elements.balconyPrompt.hidden = true;
+      elements.balconySize.hidden = false;
+      elements.balconySize.focus();
+    }
   } finally {
     voiceListening = false;
     elements.contextMicButton.disabled = !voiceController.capability().available;
@@ -455,21 +463,94 @@ function updateHistoryButtons() {
   elements.undoButton.disabled = historyCursor <= 0;
   elements.redoButton.disabled = historyCursor < 0 || historyCursor >= historyEntries.length - 1;
 }
+// ↶ is an eraser for what was written down (Bolat, 08.10.2026: it jumped between screens and needed several presses
+// for one wrong number). Only the record counts: the plan, the first room's steps and sizes, the shape being drawn.
+// Screens, the selected wall and the step being asked are not an action; they are kept with the record they belong to,
+// so ↶ comes back exactly where the undone number was said, and asks it again.
+function historyRecord(value) {
+  const shape = value.shape ? { count: value.shape.count, walls: value.shape.walls, angles: value.shape.angles,
+    clockwise: value.shape.clockwise, thickness: value.shape.thickness } : null;
+  const form = value.form ?? {};
+  return JSON.stringify({
+    package: value.package, entrance: value.entrance, shape, pendingShape: value.pendingShape,
+    openingAnchors: value.openingAnchors,
+    sizes: [form.address, form.roomName, form.firstLength, form.secondLength, form.wallThickness],
+  });
+}
 function recordHistory(value = draftValue()) {
   if (historyRestoring) return;
-  const serialized = JSON.stringify(value);
-  if (historyCursor >= 0 && historyEntries[historyCursor]?.serialized === serialized) return;
+  const record = historyRecord(value);
+  if (historyCursor >= 0 && historyEntries[historyCursor]?.record === record) {
+    // The same record seen from another screen or step: the entry keeps the latest view of it.
+    historyEntries[historyCursor].value = structuredClone(value);
+    return;
+  }
   historyEntries = historyEntries.slice(0, historyCursor + 1);
-  historyEntries.push({ serialized, value: structuredClone(value) });
+  historyEntries.push({ record, value: structuredClone(value) });
   if (historyEntries.length > 50) historyEntries.shift();
   historyCursor = historyEntries.length - 1;
   updateHistoryButtons();
+}
+const WALL_WORDS = { door: "двери", window: "окна", passage: "проёма" };
+// What ↶ or ↷ changed, in the technician's words: "расстояние до двери", "комната «Кухня»".
+function describeChange(from, to) {
+  const before = from?.package?.rooms ?? [];
+  const after = to?.package?.rooms ?? [];
+  if (before.length !== after.length) {
+    const longer = before.length > after.length ? before : after;
+    const shorter = before.length > after.length ? after : before;
+    const room = longer.find((item) => !shorter.some((other) => other.id === item.id));
+    return room ? `комната «${room.name}»` : "комната";
+  }
+  for (const [index, room] of after.entries()) {
+    const old = before[index];
+    if (!old) continue;
+    if (old.openings.length !== room.openings.length) {
+      const longer = old.openings.length > room.openings.length ? old.openings : room.openings;
+      const shorter = longer === old.openings ? room.openings : old.openings;
+      const opening = longer.find((item) => !shorter.some((other) => other.id === item.id));
+      return opening ? { door: "дверь", window: "окно", passage: "проём" }[opening.kind] ?? "проём" : "проём";
+    }
+    // A wall first: its new length also moves the openings measured from its far corner.
+    if (room.walls.some((wall, wallIndex) => Math.abs(wall.length_m - (old.walls[wallIndex]?.length_m ?? 0)) > 1e-9)) {
+      return "длина стены";
+    }
+    for (const opening of room.openings) {
+      const was = old.openings.find((item) => item.id === opening.id);
+      if (!was) continue;
+      const of = WALL_WORDS[opening.kind] ?? "проёма";
+      if (was.kind !== opening.kind) return `вид проёма`;
+      if (Math.abs(was.width_m - opening.width_m) > 1e-9) return `ширина ${of}`;
+      if (Math.abs(was.offset_m - opening.offset_m) > 1e-9 || was.wall_id !== opening.wall_id) return `расстояние до ${of}`;
+      if ((was.wall_thickness_m ?? 0) !== (opening.wall_thickness_m ?? 0)) return `толщина стены у ${of}`;
+    }
+    if (JSON.stringify(old.balconies ?? []) !== JSON.stringify(room.balconies ?? [])) return "балкон";
+    if (JSON.stringify(old.interiors ?? []) !== JSON.stringify(room.interiors ?? [])) return "санузел, кладовка или колонна";
+  }
+  if ((from?.package?.ceiling_height_m ?? null) !== (to?.package?.ceiling_height_m ?? null)) return "высота потолка";
+  if ((from?.package?.address ?? "") !== (to?.package?.address ?? "")) return "адрес";
+  const was = from?.form ?? {};
+  const now = to?.form ?? {};
+  if (was.firstLength !== now.firstLength || was.secondLength !== now.secondLength) return "длина стены";
+  if (was.wallThickness !== now.wallThickness || from?.entrance?.thickness !== to?.entrance?.thickness) return "толщина стены";
+  if (JSON.stringify(from?.entrance?.anchor ?? null) !== JSON.stringify(to?.entrance?.anchor ?? null)
+    || from?.entrance?.side !== to?.entrance?.side) return "расстояние до двери";
+  return "";
+}
+let noticeTimer = null;
+function showNotice(text) {
+  clearTimeout(noticeTimer);
+  elements.undoToast.textContent = text;
+  elements.undoToast.hidden = false;
+  noticeTimer = setTimeout(() => { elements.undoToast.hidden = true; }, 3500);
 }
 async function moveHistory(direction) {
   const nextIndex = historyCursor + direction;
   if (nextIndex < 0 || nextIndex >= historyEntries.length) return;
   const before = draftValue();
   const snapshot = structuredClone(historyEntries[nextIndex].value);
+  const what = describeChange(direction < 0 ? snapshot : before, direction < 0 ? before : snapshot);
+  showNotice(`${direction < 0 ? "Отменено" : "Возвращено"}: ${what || "последнее действие"}`);
   historyCursor = nextIndex;
   historyRestoring = true;
   packageData = snapshot.package ?? null;
@@ -480,13 +561,40 @@ async function moveHistory(direction) {
   await persist();
   historyRestoring = false;
   updateHistoryButtons();
-  if (direction < 0) {
-    const measurementIds = ["firstLength", "secondLength", "wallThickness", "openingOffset", "openingWidth", "adjacentFirstLength", "adjacentSecondLength", "adjacentAnchorOffset"];
-    const changed = measurementIds.find((id) => before.form?.[id] !== snapshot.form?.[id]);
+  if (direction < 0) reaskUndone(before, snapshot);
+}
+// After ↶ the number that was erased is asked again, where it is written (Bolat, 08.10.2026: "стрелка должна снова
+// вернуть на расстояние до угла"). The microphone opens only for a question that takes the answer.
+function reaskUndone(before, snapshot) {
+  if (currentScreen === "room") {
+    const ids = ["firstLength", "secondLength", "wallThickness"];
+    const changed = ids.find((id) => before.form?.[id] !== snapshot.form?.[id]);
     if (changed) {
       selectVoiceTargetById(changed);
       setTimeout(startContextVoice, 0);
     }
+    return;
+  }
+  const rooms = packageData?.rooms ?? [];
+  const undone = before.package?.rooms ?? [];
+  if (rooms.length !== undone.length) return;
+  for (const [roomIndex, room] of rooms.entries()) {
+    const later = undone[roomIndex];
+    if (!later || later.id !== room.id) continue;
+    const moved = room.openings.find((opening) => {
+      const was = later.openings.find((item) => item.id === opening.id);
+      return was && (Math.abs(was.offset_m - opening.offset_m) > 1e-9 || was.wall_id !== opening.wall_id);
+    });
+    const wallIndex = room.walls.findIndex((wall, index) => Math.abs(wall.length_m - (later.walls[index]?.length_m ?? wall.length_m)) > 1e-9);
+    if (!moved && wallIndex < 0) continue;
+    if (currentRoomIndex !== roomIndex || currentScreen !== "openings") {
+      currentRoomIndex = roomIndex;
+      showScreen("openings");
+    }
+    // A wall length moves the openings measured from its far corner too: the wall is what was said.
+    if (wallIndex >= 0) startWallFix(wallIndex);
+    else fixOpeningDistance(moved.id, openingAnchorSide(room, moved));
+    return;
   }
 }
 
@@ -557,6 +665,7 @@ function initializeUi() {
     startContextVoice();
   });
   installPlanGestures();
+  installOverviewTaps();
 }
 function syncHeaderTitle() {
   const address = (currentScreen === "start" || !packageData ? elements.address.value : packageData.address).trim();
@@ -571,6 +680,49 @@ function pointInPolygon(point, polygon) {
     if ((yi > point[1]) !== (yj > point[1]) && point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi) inside = !inside;
   }
   return inside;
+}
+// The small plan in the corner is the way between rooms (Bolat, 08.10.2026: ← led to the remarks, and the small plan
+// did nothing): a tap opens the room under the finger, or the nearest one — rooms there are small for a finger.
+function overviewRoomAt(canvas, event) {
+  const bounds = canvas.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
+  const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
+  const shapes = canvas.roomShapes ?? [];
+  const inside = shapes.find((shape) => pointInPolygon([x, y], shape.points));
+  if (inside) return inside.index;
+  let best = null;
+  for (const shape of shapes) {
+    const corners = shape.points.slice(0, -1);
+    const centre = [corners.reduce((sum, p) => sum + p[0], 0) / corners.length, corners.reduce((sum, p) => sum + p[1], 0) / corners.length];
+    const distance = Math.hypot(centre[0] - x, centre[1] - y);
+    if (!best || distance < best.distance) best = { index: shape.index, distance };
+  }
+  return best?.index ?? null;
+}
+function openRoomFromOverview(index) {
+  if (!Number.isInteger(index) || !packageData?.rooms?.[index]) return;
+  if (voiceListening) stopContextVoice();
+  clearOpeningEdit();
+  openingStep = null;
+  balconyStep = null;
+  pendingAdjacent = null;
+  pendingShape = null;
+  currentRoomIndex = index;
+  showScreen("openings");
+  persist();
+}
+function installOverviewTaps() {
+  elements.openingOverviewCanvas.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const index = overviewRoomAt(elements.openingOverviewCanvas, event);
+    if (index !== null && index !== currentRoomIndex) openRoomFromOverview(index);
+  });
+  elements.adjacentOverviewCanvas.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const index = overviewRoomAt(elements.adjacentOverviewCanvas, event);
+    // The last room there is the new one being measured: a tap on it keeps measuring.
+    if (index !== null && index < (packageData?.rooms?.length ?? 0)) openRoomFromOverview(index);
+  });
 }
 function installPlanGestures() {
   const canvas = elements.planCanvas;
@@ -678,6 +830,7 @@ function showScreen(name) {
   if (WORK_SCREENS.includes(name) && name !== "openings") openingStep = null;
   if (WORK_SCREENS.includes(name) && name !== "interior") interiorStep = null;
   if (name !== "openings") balconyStep = null;
+  if (name !== "openings") armedKind = null;
   if (name !== "interior") cancelAnimationFrame(interiorPulseFrame);
   document.documentElement.dataset.screen = name;
   if (name === "start") {
@@ -801,6 +954,7 @@ function restoreOpeningStep(value) {
   if (!["side", "width", "thickness"].includes(value.step) || typeof value.id !== "string") return null;
   const step = { step: value.step, id: value.id, editing: value.editing === true, balcony: value.balcony === true };
   if (value.reanchor === true) step.reanchor = true;
+  if (value.distanceOnly === true) step.distanceOnly = true;
   if (value.step !== "thickness") step.side = ["start", "end"].includes(value.side) ? value.side : null;
   if (value.step === "width") {
     if (!step.side || !Number.isFinite(value.distance)) return null;
@@ -1411,6 +1565,74 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
     drawCornerLetters(context, corners, canvasOutward(corners));
   }
 }
+// The corner an opening is measured from: the one the technician tapped, or the nearer one for older openings.
+function openingAnchorSide(room, opening) {
+  const wallIndex = Math.max(openingWallIndex(room, opening), 0);
+  const fromEnd = room.walls[wallIndex].length_m - opening.offset_m - opening.width_m;
+  if (openingAnchors[opening.id]) return openingAnchors[opening.id];
+  return fromEnd < opening.offset_m - 1e-9 ? "end" : "start";
+}
+function openingDistance(room, opening, side) {
+  const wallIndex = Math.max(openingWallIndex(room, opening), 0);
+  return side === "end" ? room.walls[wallIndex].length_m - opening.offset_m - opening.width_m : opening.offset_m;
+}
+// Every distance from a corner to a door or window is written on the drawing, inside the room by its piece of wall,
+// in a frame — as on the sheet (Bolat, 08.10.2026: the said number was nowhere to be seen). A tap on it says it again.
+function drawOpeningDistances(canvas, room, skipId = null) {
+  canvas.offsetHitboxes = [];
+  if (!room?.openings?.length) return;
+  const context = canvas.getContext("2d");
+  const outline = canvasRoomOutline(canvas, room);
+  const outward = canvasOutward(outline);
+  context.save();
+  // As large as the wall lengths: the canvas is drawn at about half size on a phone.
+  context.font = "700 24px system-ui";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  for (const opening of room.openings) {
+    if (opening.id === skipId) continue;
+    const wallIndex = openingWallIndex(room, opening);
+    if (wallIndex < 0) continue;
+    const side = openingAnchorSide(room, opening);
+    const distance = openingDistance(room, opening, side);
+    if (!(distance > 0.004)) continue;
+    const length = room.walls[wallIndex].length_m;
+    const piece = side === "start" ? { offset_m: 0, width_m: distance } : { offset_m: length - distance, width_m: distance };
+    const [sx, sy, ex, ey] = canvasWallSegment(canvas, room, wallIndex, piece);
+    const out = outward([sx, sy], [ex, ey]);
+    let x = (sx + ex) / 2 - out[0] * 34;
+    let y = (sy + ey) / 2 - out[1] * 34;
+    // Two short pieces at one corner would put their numbers on each other: the later one moves along its wall
+    // towards its opening until it stands clear.
+    const span = Math.hypot(ex - sx, ey - sy) || 1;
+    const towards = side === "start" ? [(ex - sx) / span, (ey - sy) / span] : [(sx - ex) / span, (sy - ey) / span];
+    for (let step = 0; step < 6 && canvas.offsetHitboxes.some((box) => Math.hypot(box.x - x, box.y - y) < 64); step += 1) {
+      x += towards[0] * 24;
+      y += towards[1] * 24;
+    }
+    let angle = Math.atan2(ey - sy, ex - sx);
+    if (angle > Math.PI / 2) angle -= Math.PI;
+    if (angle < -Math.PI / 2) angle += Math.PI;
+    const label = formatLength(distance);
+    const width = context.measureText(label).width + 18;
+    context.save();
+    context.translate(x, y);
+    context.rotate(angle);
+    context.beginPath();
+    if (context.roundRect) context.roundRect(-width / 2, -18, width, 36, 10);
+    else context.rect(-width / 2, -18, width, 36);
+    context.fillStyle = uiColor("--field", "#ffffff");
+    context.fill();
+    context.lineWidth = 2;
+    context.strokeStyle = uiColor("--button", "#285778");
+    context.stroke();
+    context.fillStyle = uiColor("--button", "#285778");
+    context.fillText(label, 0, 1);
+    context.restore();
+    canvas.offsetHitboxes.push({ openingId: opening.id, side, x, y, radius: Math.max(46, width / 2 + 14) });
+  }
+  context.restore();
+}
 // The outer face of a room's walls (model.js; the desktop's outer_points does the same).
 function outerOutline(room) {
   return roomOuterPolygon(room);
@@ -1544,7 +1766,7 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
 const ROOM_TIPS = {
   wall: "Шаг 2. Вход всегда снизу. Нажмите на мигающую красную стену — включится микрофон — и назовите её длину.",
   anchor: "Шаг 3. Дверь встала посередине. Нажмите на мигающий кусок стены слева или справа от двери и назовите расстояние от угла до двери.",
-  thickness: "Шаг 4. Нажмите красную кнопку «Толщина ?» и назовите толщину стены.",
+  thickness: "Шаг 4. Нажмите красную кнопку «Толщина ?» и назовите толщину стены. Ошиблись в расстоянии — коснитесь стены с дверью.",
   measure: "Шаг 5. Нажмите на мигающую стену и назовите её длину.",
 };
 // One hint per step in a yellow card above the drawing (Bolat, 05.10.2026); switched off in "Настройки"
@@ -1564,7 +1786,7 @@ function hintText() {
       return "За дверью балкон. Нажмите красную кнопку и назовите размер, например «метр на два»: меньшее число — насколько он выступает.";
     }
     if (balconyStep) {
-      return "Балкон стоит по центру двери. Стоит не там — нажмите снаружи вдоль стены, где он на самом деле: у угла или выступающей стены он упрётся в неё. Размер — красная кнопка.";
+      return "Балкон стоит по центру двери. Стоит не там — коснитесь снаружи вдоль стены, где он есть: у угла он упрётся в стену. Размер — красная кнопка.";
     }
     const placing = stepOpening();
     // The distance of a balcony is measured to its door.
@@ -1573,7 +1795,7 @@ function hintText() {
       return "Что в этой стене? Нажмите под рисунком: дверь, окно, проём или балкон. Длина стены другая — красная кнопка «Длина».";
     }
     if (openingStep?.step === "side" && openingStep.reanchor && !openingStep.side) {
-      return "Комната шире или уже стены, через которую вошли. Где в ней дверь: нажмите на мигающий кусок стены слева или справа от двери и назовите расстояние от угла до двери.";
+      return "Комната шире или уже стены, через которую вошли. Коснитесь мигающего куска у двери и назовите расстояние от угла до двери.";
     }
     if (openingStep?.step === "side" && !openingStep.side) {
       if (openingStep.balcony) return "Нажмите на мигающий кусок стены слева или справа от двери балкона и назовите расстояние от угла до двери.";
@@ -1582,38 +1804,41 @@ function hintText() {
     if (openingStep?.step === "side") return `Назовите расстояние от угла до ${of}.`;
     if (openingStep?.step === "width") return `Нажмите «Ширина ${of} ?» и назовите ширину ${of}.`;
     if (openingStep?.step === "thickness") {
-      if (openingStep.balcony) return "Нажмите «Толщина стены у балкона ?» и назовите толщину. Затем назовите размер балкона.";
-      return `Нажмите «Толщина стены у ${of} ?» и назовите толщину. Потом откроется комната за ${placing.kind === "door" ? "дверью" : "проёмом"}.`;
+      const again = " Ошиблись в расстоянии — коснитесь этой стены.";
+      if (openingStep.balcony) return `Нажмите «Толщина стены у балкона ?» и назовите её, потом размер балкона.${again}`;
+      return `Нажмите «Толщина стены у ${of} ?» и назовите её, потом — комната за ${placing.kind === "door" ? "дверью" : "проёмом"}.${again}`;
     }
+    const room = packageData?.rooms?.[currentRoomIndex];
+    const fix = room?.openings?.length ? " Неверная цифра — коснитесь её." : "";
     if ((packageData?.rooms?.length ?? 0) > 1) {
-      return "Отметьте двери и окна этой комнаты: нажмите на стену. Через новую дверь откроется следующая комната. Вернуться в другую комнату — нажмите ← и коснитесь её на плане.";
+      return `Двери и окна — нажмите на стену. Другая комната — коснитесь её на плане в углу.${fix}`;
     }
-    return "Есть ещё двери или окна? Нажмите на стену, где они есть. Через новую дверь откроется следующая комната.";
+    return `Ещё двери или окна — нажмите на стену. За новой дверью откроется следующая комната.${fix}`;
   }
   if (currentScreen === "interior") {
     const current = stepInterior();
-    if (interiorStep?.step === "kind") return "Что здесь? Нажмите под рисунком: санузел, кладовка или колонна.";
+    if (interiorStep?.step === "kind") return "Что здесь? Нажмите под рисунком: санузел, кладовка или колонна. Нажали по ошибке — коснитесь снаружи комнаты.";
     if (current) {
       const room = packageData.rooms[currentRoomIndex];
       const corner = cornerName(Math.max(room.walls.findIndex((wall) => wall.id === current.wall_id), 0));
       const of = interiorGenitive(current);
       const inside = current.kind === "storage" ? " внутри" : "";
       const ask = {
-        offset: `Мигает угол ${corner} — от него меряем (меряли от другого — нажмите на тот угол). Назовите расстояние от угла до ${of} вдоль мигающей стены; стоит вплотную — «ноль».`,
+        offset: `Назовите расстояние от угла ${corner} до ${of} вдоль мигающей стены; вплотную — «ноль». Другой угол или место — коснитесь их.`,
         inset: `Назовите расстояние от угла ${corner} до ${of} вдоль второй мигающей стены; вплотную — «ноль».`,
         width: `Назовите ширину ${of}${inside}.`,
         depth: `Назовите глубину ${of}${inside}.`,
         partition: `Назовите толщину перегородки ${of}.`,
       }[interiorStep.step];
-      return `${ask} Микрофон — красная кнопка или касание ${of}. Стоит не там — коснитесь места, где он стоит.`;
+      return interiorStep.step === "offset" ? ask : `${ask} Стоит не там — коснитесь, где он стоит.`;
     }
-    return "Нажмите внутрь комнаты, где санузел, кладовка или колонна. Дверь санузла или кладовки переносится касанием её стороны.";
+    return "Коснитесь внутри комнаты, где санузел, кладовка или колонна. Дверь кладовки — касанием её стороны. Назад — коснитесь снаружи.";
   }
   if (currentScreen === "adjacent") {
     if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
       return "Стена с дверью другой длины. Нажмите «До двери» и назовите расстояние от угла до двери.";
     }
-    return "Комната за дверью. Нажмите на мигающую красную стену и назовите её длину. Если стена с дверью другой длины, сначала нажмите на неё. За дверью балкон — кнопка «Балкон».";
+    return "Коснитесь мигающей стены, назовите длину. Стена с дверью другая — сначала её. Балкон — кнопка вверху. Не та дверь — план в углу.";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
     if (validationIssues(packageData).length) return "Нажмите на замечание — откроется место, где его исправить.";
@@ -2203,6 +2428,21 @@ async function chooseOpeningKind(kind) {
     showError(error);
   }
 }
+// The eraser: a tap on a distance written on the drawing asks only that number again, from the same corner.
+function fixOpeningDistance(id, side) {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  const opening = room?.openings?.find((item) => item.id === id);
+  if (!opening) return;
+  clearOpeningEdit(false);
+  clearError();
+  hideWallFix();
+  balconyStep = null;
+  // A door still without its thickness (↶ went back to its distance) goes on as a new one: thickness, then the room
+  // behind it. One already finished is only moved.
+  const finished = opening.wall_thickness_m > 0 || Boolean(connectionForOpening(packageData, currentRoomIndex, id));
+  openingStep = { step: "side", id, side: null, editing: finished, distanceOnly: true, balcony: Boolean(balconyForOpening(room, id)) };
+  startOpeningDistance(side);
+}
 function startOpeningDistance(side) {
   openingStep = { ...openingStep, side };
   elements.openingOffset.value = "";
@@ -2225,8 +2465,10 @@ function finishOpeningPlacement(id) {
   openingStep = placed.wall_thickness_m > 0 ? null : { step: "thickness", id, editing, balcony };
   renderOpenings();
   persist();
-  // Correcting a placed door only moves it; walking through is a tap on the door.
-  if (!openingStep && placed.kind !== "window" && !editing) afterOpeningThickness(id, true, balcony);
+  // Correcting a placed door only moves it; walking through is a tap on the door. A balcony door still without its
+  // balcony asks the size even after a correction.
+  const owesBalcony = balcony && !balconyForOpening(packageData.rooms[currentRoomIndex], id);
+  if (!openingStep && placed.kind !== "window" && (!editing || owesBalcony)) afterOpeningThickness(id, true, balcony);
 }
 // With thickness known, an ordinary door opens its next room; a balcony door asks for its size here.
 function afterOpeningThickness(id, placedNow = false, balconyPlaced = false) {
@@ -2235,7 +2477,8 @@ function afterOpeningThickness(id, placedNow = false, balconyPlaced = false) {
   const balcony = balconyPlaced || Boolean(openingStep?.balcony);
   openingStep = null;
   const opening = packageData?.rooms?.[currentRoomIndex]?.openings?.find((item) => item.id === id);
-  if (!opening || editing || opening.kind === "window" || connectionForOpening(packageData, currentRoomIndex, id)) {
+  const owesBalcony = balcony && opening && !balconyForOpening(packageData.rooms[currentRoomIndex], id);
+  if (!opening || (editing && !owesBalcony) || opening.kind === "window" || connectionForOpening(packageData, currentRoomIndex, id)) {
     renderOpenings();
     return;
   }
@@ -2404,6 +2647,8 @@ function renderOpenings() {
       // blink in turn until one is tapped, then that piece alone.
       const asking = openingStep.step === "kind";
       drawRoom(elements.openingCanvas, room, asking ? openingStep.wallIndex : null, asking);
+      // The opening whose distance is being asked has no number yet: it stands in the middle until it is said.
+      drawOpeningDistances(elements.openingCanvas, room, openingStep.step === "side" ? guided?.id : null);
       if (openingStep.step === "side") {
         const side = openingStep.side ?? (Math.floor(Date.now() / 650) % 2 ? "end" : "start");
         strokeWallSegment(elements.openingCanvas.getContext("2d"), openingPiece(elements.openingCanvas, room, guided, side), true);
@@ -2412,6 +2657,7 @@ function renderOpenings() {
       return;
     }
     drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive && !selectedFullConnection);
+    drawOpeningDistances(elements.openingCanvas, displayRoom);
     if (openingPlacementActive && !selectedFullConnection) {
       const offset = decimal(elements.openingOffset.value);
       const width = decimal(elements.openingWidth.value);
@@ -2451,7 +2697,7 @@ function renderOpenings() {
   const shownKind = openingStep?.balcony || (guided && balconyForOpening(room, guided.id))
     || (editingOpeningId && balconyForOpening(room, editingOpeningId)) ? "balcony"
     : guided?.kind ?? (editingOpeningId ? openingKind : null);
-  for (const button of kindButtons) button.classList.toggle("active", button.dataset.kind === shownKind);
+  for (const button of kindButtons) button.classList.toggle("active", button.dataset.kind === (shownKind ?? armedKind));
   kindButtons[0]?.parentElement?.classList.toggle("ask", openingStep?.step === "kind");
   syncHint();
 
@@ -2470,10 +2716,9 @@ function renderOpenings() {
     // The distance is shown from the corner the technician tapped and measured from (Bolat, 05.10.2026);
     // openings from before that choice was kept count from the nearer corner.
     const wallIndex = Math.max(openingWallIndex(room, opening), 0);
-    const fromEnd = room.walls[wallIndex].length_m - opening.offset_m - opening.width_m;
-    const nearEnd = openingAnchors[opening.id] ? openingAnchors[opening.id] === "end" : fromEnd < opening.offset_m - 1e-9;
-    const corner = cornerName(nearEnd ? (wallIndex + 1) % room.walls.length : wallIndex);
-    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${corner} ${formatLength(nearEnd ? fromEnd : opening.offset_m)} м · `;
+    const side = openingAnchorSide(room, opening);
+    const corner = cornerName(side === "end" ? (wallIndex + 1) % room.walls.length : wallIndex);
+    text.textContent = `${typeName(opening.kind)} ${formatLength(opening.width_m)} м · от угла ${corner} ${formatLength(openingDistance(room, opening, side))} м · `;
     // The thickness is said again right here; the rooms behind the door move with it (Bolat, 06.10.2026).
     text.append(fixButton({
       type: "thickness", roomIndex: currentRoomIndex, openingId: opening.id, value: opening.wall_thickness_m ?? null,
@@ -2503,10 +2748,15 @@ function renderOpenings() {
     edit.title = "Изменить проём";
     // "Изменить" walks the same steps as a new opening: the piece of wall, the distance, the width.
     edit.addEventListener("click", () => {
+      // A balcony door whose size is not said yet is still a balcony door (Codex walk 08.10.2026: it became a room).
+      const balcony = Boolean(balconyForOpening(room, opening.id)) || balconyStep?.openingId === opening.id;
       clearOpeningEdit(false);
-      openingStep = { step: "side", id: opening.id, side: null, editing: true, balcony: Boolean(balconyForOpening(room, opening.id)) };
+      hideWallFix();
+      openingStep = { step: "side", id: opening.id, side: null, editing: true, balcony };
       renderOpenings();
       schedulePersist();
+      // The blinking piece is on the drawing above the list: bring it into view with the hint.
+      (elements.hintCard.hidden ? elements.openingCanvas : elements.hintCard).scrollIntoView({ behavior: "smooth", block: "start" });
     });
     actions.append(edit);
     const remove = document.createElement("button");
@@ -2908,7 +3158,9 @@ function renderShape() {
   elements.shapeCount.textContent = String(count);
   elements.shapeFewerButton.disabled = count <= 3;
   elements.shapeMoreButton.disabled = count >= MAX_SHAPE_WALLS;
-  elements.shapeResetButton.hidden = !(shapeState.context === "adjacent" && pendingShape);
+  elements.shapeResetButton.hidden = false;
+  elements.shapeResetButton.textContent = shapeState.context !== "adjacent" && packageData?.rooms?.length
+    ? "Оставить комнату как была" : "Сделать комнату прямоугольной";
   elements.shapeCaption.textContent = "Коснитесь стены и назовите размер · обход " +
     (shapeState.clockwise ? "по часовой стрелке" : "против часовой стрелки");
   const solution = shapeSolution();
@@ -3349,6 +3601,11 @@ function renderSummary() {
 }
 // A wall length tapped on the doors screen is said again; the room and every room behind it are rebuilt.
 let wallFix = null;
+// One question at a time: a new step closes the wall length that was opened and not answered.
+function hideWallFix() {
+  wallFix = null;
+  elements.wallFixBar.hidden = true;
+}
 function startWallFix(wallIndex) {
   const room = packageData.rooms[currentRoomIndex];
   wallFix = { type: "wall", roomIndex: currentRoomIndex, wallIndex, value: room.walls[wallIndex].length_m };
@@ -3369,7 +3626,7 @@ elements.removeRoomButton.addEventListener("click", async () => {
 Вместе с ней уйдут комнаты, обмеренные через неё: ${behind.join(", ")}.` : "";
   if (!confirm(`Удалить «${room.name}»?${more}
 
-Дверь в неё останется. Отменить можно кнопкой «назад» вверху.`)) return;
+Дверь в неё останется. Удалили не то — стрелка ↶ вверху вернёт.`)) return;
   try {
     const parentId = packageData.connections.find((item) => item.room_b_id === room.id)?.room_a_id;
     packageData = removeRoomFromPackage(packageData, currentRoomIndex);
@@ -3774,8 +4031,13 @@ for (const button of kindButtons) button.addEventListener("click", () => {
     return;
   }
   if (!editingOpeningId) {
-    // Nothing is being placed: the wall comes first.
-    showError("Сначала нажмите на стену, где это находится.");
+    // Nothing is being placed: the button is taken like a pencil, the next tap on a wall puts it there.
+    armedKind = armedKind === button.dataset.kind ? null : button.dataset.kind;
+    for (const item of kindButtons) item.classList.toggle("active", item.dataset.kind === armedKind);
+    if (armedKind) {
+      const what = { door: "дверь", window: "окно", passage: "проём", balcony: "дверь балкона" }[armedKind];
+      showNotice(`Теперь коснитесь стены, где ${what}.`);
+    }
     return;
   }
   openingPlacementActive = true;
@@ -3811,6 +4073,14 @@ for (const [step, field] of Object.entries(INTERIOR_FIELDS)) {
     const next = INTERIOR_STEPS.slice(INTERIOR_STEPS.indexOf(step) + 1)
       .find((item) => (item !== "partition" || interior.kind === "storage") && (item !== "inset" || all || interior.inset_m > 0));
     interiorStep = next ? { step: next, id: interior.id, all } : null;
+    if (!next) {
+      // Everything about it is said: back to the room, where the next tap inside places the next one.
+      showScreen("openings");
+      const title = interior.kind === "storage" ? interior.name || "Кладовка" : interior.kind === "column" ? "Колонна" : "Готово";
+      showNotice(`${title} — на плане. Ещё что-то внутри — коснитесь места в комнате.`);
+      await persist();
+      return;
+    }
     renderInteriors();
     await persist();
   });
@@ -3828,6 +4098,15 @@ elements.interiorCanvas.addEventListener("click", async (event) => {
   const map = canvasMap(elements.interiorCanvas, room);
   const corners = roomPoints(room).slice(0, -1).map((point) => map.to(point));
   const nearCorner = corners.findIndex((point) => Math.hypot(point[0] - x, point[1] - y) < 44);
+  // A tap outside the room is the way back to its doors and windows (there is no ← any more, Bolat 08.10.2026);
+  // a tap inside by mistake is undone the same way.
+  if (nearCorner < 0 && !pointInPolygon([x, y], corners)) {
+    if (voiceListening) stopContextVoice();
+    clearInteriorEdit();
+    showScreen("openings");
+    persist();
+    return;
+  }
   const current = stepInterior();
   if (current) {
     const base = room.walls.findIndex((wall) => wall.id === current.wall_id);
@@ -4029,22 +4308,6 @@ async function saveRoomFromForm() {
     }
   }
 }
-elements.openingsBackButton.addEventListener("click", () => {
-  clearOpeningEdit();
-  if (currentRoomIndex === 0 && packageData.rooms.length === 1) {
-    if (isPolygonRoom(packageData.rooms[0])) openShape("first");
-    else {
-      // The room screen shows the room as it is now (lengths may have been corrected on the doors screen), ready for
-      // a correction: no entrance steps again.
-      fillRoomForm(packageData.rooms[0]);
-      activeRoomWall = null;
-      showScreen("room");
-    }
-  } else {
-    showScreen("done");
-  }
-  persist();
-});
 elements.addOpeningButton.addEventListener("click", async () => {
   try {
     packageData = editingOpeningId
@@ -4061,11 +4324,6 @@ elements.openingCancelEditButton.addEventListener("click", () => {
   clearOpeningEdit();
   renderOpenings();
   schedulePersist();
-});
-elements.interiorBackButton.addEventListener("click", () => {
-  clearInteriorEdit();
-  showScreen("openings");
-  persist();
 });
 elements.interiorDoneButton.addEventListener("click", () => {
   clearInteriorEdit();
@@ -4155,13 +4413,6 @@ elements.balconyRemoveButton.addEventListener("click", async () => {
   syncHint();
   await persist();
 });
-elements.adjacentBackButton.addEventListener("click", () => {
-  currentRoomIndex = pendingAdjacent?.roomIndex ?? currentRoomIndex;
-  pendingAdjacent = null;
-  pendingShape = null;
-  showScreen("openings");
-  persist();
-});
 // The room behind a door is created as soon as it is measured: there is no "Готово — войти" (Bolat, 05.10.2026).
 function maybeCreateAdjacent() {
   if (currentScreen !== "adjacent") return;
@@ -4216,11 +4467,6 @@ elements.createAdjacentButton.addEventListener("click", async () => {
   }
 });
 elements.adjacentShapeButton.addEventListener("click", () => openShape("adjacent"));
-elements.shapeBackButton.addEventListener("click", () => {
-  if (shapeState.context === "adjacent") showScreen("adjacent");
-  else showScreen(packageData?.rooms?.length ? "openings" : "room");
-  persist();
-});
 elements.shapeFewerButton.addEventListener("click", () => {
   shapeState.count = Math.max(3, shapeState.count - 1);
   shapeState.active = null;
@@ -4238,9 +4484,15 @@ elements.shapeMirrorButton.addEventListener("click", () => {
   renderShape();
   schedulePersist();
 });
+// The way out of the shape screen (there is no ← any more, Bolat 08.10.2026): behind a door the room stays a
+// rectangle; the first room stays as it was.
 elements.shapeResetButton.addEventListener("click", () => {
-  pendingShape = null;
-  showScreen("adjacent");
+  if (shapeState.context === "adjacent") {
+    pendingShape = null;
+    showScreen("adjacent");
+  } else {
+    showScreen(packageData?.rooms?.length ? "openings" : "room");
+  }
   persist();
 });
 elements.shapeDoneButton.addEventListener("click", async () => {
@@ -4349,6 +4601,18 @@ elements.roomCanvas.addEventListener("click", (event) => {
     return;
   }
   if (entrance.step === "thickness") {
+    if (wallIndex === entrance.wall) {
+      // A tap on the door wall while the thickness is asked means the distance was said wrong (Bolat, 08.10.2026:
+      // tapped there to correct it, and the number became the thickness). The distance is asked again.
+      const along = [x - box.left, box.bottom - y, box.right - x, y - box.top][wallIndex] / box.scale;
+      const door = room.openings?.[0];
+      entrance = { ...entrance, step: "anchor", side: door && along > door.offset_m + door.width_m / 2 ? "end" : "start" };
+      renderRoomInput();
+      selectVoiceTargetById("doorAnchor");
+      startContextVoice();
+      schedulePersist();
+      return;
+    }
     selectVoiceTargetById("wallThickness");
     startContextVoice();
     return;
@@ -4406,6 +4670,17 @@ elements.openingCanvas.addEventListener("click", async (event) => {
   const bounds = elements.openingCanvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height;
+  // Any tap on the drawing closes a wall length opened and not answered: one question on the screen at a time.
+  hideWallFix();
+  // A distance written on the drawing is corrected by a tap on it, at any moment (the eraser, Bolat 08.10.2026).
+  const distanceLabel = (elements.openingCanvas.offsetHitboxes ?? [])
+    .map((box) => ({ ...box, distance: Math.hypot(x - box.x, y - box.y) }))
+    .filter((box) => box.distance < box.radius)
+    .sort((a, b) => a.distance - b.distance)[0];
+  if (distanceLabel && !(openingStep?.step === "side" && openingStep.id === distanceLabel.openingId)) {
+    fixOpeningDistance(distanceLabel.openingId, distanceLabel.side);
+    return;
+  }
   // A length label is outside its wall: only a tap outside the room and clear of the wall line corrects the number.
   // Its box used to reach over the wall, and a tap meant for a door opened "новая длина" with the microphone.
   // A balcony: a tap on it selects it; with one selected, a tap outside along its wall moves it there.
@@ -4460,8 +4735,12 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     return distanceToCanvasSegment(x, y, [x1, y1], [x2, y2]) < 36;
   });
   const placing = stepOpening();
-  if (openingStep?.step === "side" && placing && placing.wall_id === wall.id && (!hit || hit.id === placing.id)) {
-    // The tap tells which piece of the wall anchors the opening: left or right of its middle.
+  if (placing && placing.wall_id === wall.id && (!hit || hit.id === placing.id)
+    && ["side", "width", "thickness"].includes(openingStep?.step)) {
+    // The tap tells which piece of the wall anchors the opening: left or right of its middle. Asked for the width or
+    // the thickness, a tap on the same wall means the distance was said wrong (Bolat tapped there to correct it, and
+    // the number went into the thickness): the distance is asked again.
+    if (openingStep.step !== "side") openingStep = { ...openingStep, step: "side", side: null, distanceOnly: openingStep.step === "thickness" };
     const [sx, sy, ex, ey] = canvasWallSegment(elements.openingCanvas, room, wallIndex, { offset_m: 0, width_m: wall.length_m });
     const along = ((x - sx) * (ex - sx) + (y - sy) * (ey - sy)) / ((ex - sx) ** 2 + (ey - sy) ** 2 || 1) * wall.length_m;
     startOpeningDistance(along > placing.offset_m + placing.width_m / 2 ? "end" : "start");
@@ -4487,10 +4766,16 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     showError("Эта стена целиком общая с соседней комнатой: её двери и окна уже на месте.");
     return;
   }
-  // A tap on a wall starts a new opening there: first the question what is in it.
+  // A tap on a wall starts a new opening there: first the question what is in it, unless it was chosen before.
   clearOpeningEdit(false);
   clearError();
   openingStep = { step: "kind", wallIndex };
+  if (armedKind) {
+    const kind = armedKind;
+    armedKind = null;
+    await chooseOpeningKind(kind);
+    return;
+  }
   renderOpenings();
   schedulePersist();
 });
@@ -4519,7 +4804,7 @@ elements.openingOffset.addEventListener("change", () => {
   }
   clearError();
   openingAnchors[opening.id] = openingStep.side;
-  if (opening.kind !== "door") {
+  if (opening.kind !== "door" && !openingStep.distanceOnly) {
     // A window or passage has no standard width: it is asked next, keeping the distance just named.
     openingStep = { step: "width", id: opening.id, side: openingStep.side, distance: value, editing: openingStep.editing };
     elements.openingWidth.value = "";
