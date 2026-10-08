@@ -1153,7 +1153,7 @@ export function setOpeningWallThickness(pkg, roomIndex, openingId, thicknessM) {
 
 // A corrected wall length (Bolat, 06.10.2026): a rectangle changes both opposite walls, and every room behind its
 // doors moves with it. A wall shared whole with the room it was measured from is that room's wall.
-export function setWallLength(pkg, roomIndex, wallIndex, lengthM) {
+export function setWallLength(pkg, roomIndex, wallIndex, lengthM, { parentSide } = {}) {
   const room = pkg?.rooms?.[roomIndex];
   const wall = room?.walls?.[wallIndex];
   if (!wall) throw new Error("Стена не найдена.");
@@ -1164,7 +1164,7 @@ export function setWallLength(pkg, roomIndex, wallIndex, lengthM) {
     const fullDoorWall = (index) => pkg.connections.some((connection) => connection.room_b_id === room.id &&
       connection.wall_b_id === room.walls[index].id && (connection.mode ?? "full_wall") === "full_wall");
     if (fullDoorWall(doorWallIndex) && !fullDoorWall(wallIndex) && Math.abs(length - wall.length_m) >= 0.005) {
-      return resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length);
+      return resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length, parentSide);
     }
   }
   const sameWalls = isRectangle(room) ? [wallIndex, (wallIndex + 2) % 4] : [wallIndex];
@@ -1231,9 +1231,9 @@ export function setCornerAngle(pkg, roomIndex, corner, degreesValue) {
 
 // The wall opposite the door wall of a room behind a door named different (Bolat, 07.10.2026): the room is wider or
 // narrower than the wall it was entered through. It stays a rectangle of the named width and hangs on its door from
-// the corner it starts at; the first room does not change. Before, the opposite wall dragged the shared wall along,
-// and the shared wall changed the room in front.
-function resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length) {
+// the physical corner used for the parent door measurement; the first room does not change. Before, the opposite wall
+// dragged the shared wall along, and the shared wall changed the room in front.
+function resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length, parentSide) {
   const next = structuredClone(pkg);
   const room = next.rooms[roomIndex];
   const doorWall = room.walls[doorWallIndex];
@@ -1250,10 +1250,22 @@ function resizeRoomBehindDoor(pkg, roomIndex, doorWallIndex, length) {
     throw new Error("В этой стене есть другая дверь в соседнюю комнату: сначала удалите ту комнату.");
   }
   room.openings = room.openings.filter((item) => !others.includes(item));
-  const offset = roundMetres(Math.min(Math.max(0, door.offset_m), length - door.width_m));
+  const parent = next.rooms.find((item) => item.id === connection.room_a_id);
+  const parentWall = parent.walls.find((item) => item.id === connection.wall_a_id);
+  const parentDoor = parent.openings.find((item) => item.id === connection.opening_a_id);
+  const fromParentStart = parentDoor.offset_m;
+  const fromParentEnd = parentWall.length_m - parentDoor.offset_m - parentDoor.width_m;
+  // The door walls run in opposite directions. Keep the nearer physical corner aligned when this width changes.
+  const anchorCorner = parentSide === "start" ? "end" : parentSide === "end" ? "start"
+    : fromParentStart < fromParentEnd ? "end" : "start";
+  const anchorOffset = anchorCorner === "end" ? fromParentStart : fromParentEnd;
+  if (anchorOffset + door.width_m > length + 1e-9) {
+    throw new Error("Дверь не помещается от выбранного угла новой стены. Проверьте длину стены и положение двери.");
+  }
+  const offset = roundMetres(anchorCorner === "end" ? length - anchorOffset - door.width_m : anchorOffset);
   connection.mode = "door_anchor";
-  connection.anchor_corner = "start";
-  connection.anchor_offset_m = offset;
+  connection.anchor_corner = anchorCorner;
+  connection.anchor_offset_m = roundMetres(anchorOffset);
   door.offset_m = offset;
   setRoomWallLength(room, doorWallIndex, length);
   doorWall.source = "inferred_opposite";

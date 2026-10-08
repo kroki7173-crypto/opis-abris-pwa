@@ -224,12 +224,15 @@
         <input id="adjacentName" maxlength="120" value="Комната">
         <label for="adjacentFirstLength">Стена с дверью</label>
         <input id="adjacentFirstLength" inputmode="decimal">
-        <label for="adjacentSecondLength">Следующая стена</label>
-        <input id="adjacentSecondLength" inputmode="decimal">
+
         <label for="adjacentAnchorCorner">Ближайший угол</label>
         <select id="adjacentAnchorCorner"><option value="start">Первый угол</option><option value="end">Второй угол</option></select>
         <label for="adjacentAnchorOffset">От угла до двери</label>
         <input id="adjacentAnchorOffset" inputmode="decimal">
+      </div>
+      <div class="adjacent-size-entry">
+        <label for="adjacentSecondLength">Размер комнаты: стена с дверью × следующая стена, м</label>
+        <input id="adjacentSecondLength" inputmode="text" placeholder="Например, 4,5 на 4" autocomplete="off">
       </div>
 
       <figure id="adjacentPreview" class="preview plan-stage adjacent-stage">

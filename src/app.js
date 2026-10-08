@@ -103,7 +103,7 @@ const VOICE_FIELDS = [
   ["openingWidth", "width", "ширину проёма"],
   ["adjacentName", "text", "название следующей комнаты"],
   ["adjacentFirstLength", "measurement", "первую стену следующей комнаты"],
-  ["adjacentSecondLength", "measurement", "соседнюю стену следующей комнаты"],
+  ["adjacentSecondLength", "text", "размер комнаты: стена с дверью на следующую стену"],
   ["adjacentAnchorOffset", "measurement", "привязку двери от угла"],
   ["interiorName", "text", "название кладовки"],
   ["interiorOffset", "measurement", "отступ вдоль стены"],
@@ -1920,7 +1920,7 @@ function hintText() {
     if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
       return "Стена с дверью другой длины. Нажмите «До двери» и назовите расстояние от угла до двери.";
     }
-    return "Коснитесь мигающей стены, назовите длину. Стена с дверью другая — сначала её. Балкон — кнопка вверху. Не та дверь — план в углу.";
+    return "Назовите обе стены сразу: «4,5 на 4» (сначала стена с дверью). Или коснитесь стены на рисунке. Балкон — кнопка вверху.";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
     if (validationIssues(packageData).length) return "Нажмите на замечание — откроется место, где его исправить.";
@@ -2619,8 +2619,10 @@ function openAdjacent(roomIndex, openingId) {
   elements.adjacentName.value = "Комната " + (packageData.rooms.length + 1);
   elements.adjacentFirstLength.value = wall.length_m.toFixed(2).replace(".", ",");
   elements.adjacentSecondLength.value = "";
-  elements.adjacentAnchorCorner.value = "start";
-  elements.adjacentAnchorOffset.value = "";
+  // The door distance was measured on the parent wall already. Its corners run in reverse on the new wall.
+  const parentSide = openingAnchorSide(room, opening);
+  elements.adjacentAnchorCorner.value = parentSide === "start" ? "end" : "start";
+  elements.adjacentAnchorOffset.value = formatLength(openingDistance(room, opening, parentSide));
   showScreen("adjacent");
   schedulePersist();
   selectVoiceTargetById("adjacentSecondLength");
@@ -3560,22 +3562,15 @@ function keepEndAnchors(before, after) {
 async function applyFix(fix, raw) {
   const value = decimal(raw);
   if (!(value > 0)) return;
-  const roomId = packageData.rooms[fix.roomIndex]?.id;
-  const entry = (pkg) => pkg.connections.find((connection) => connection.room_b_id === roomId);
-  const wasWholeWall = (entry(packageData)?.mode ?? "full_wall") === "full_wall" && Boolean(entry(packageData));
+  const room = packageData.rooms[fix.roomIndex];
+  const incoming = packageData.connections.find((item) => item.room_b_id === room?.id && (item.mode ?? "full_wall") === "full_wall");
+  const parentSide = incoming ? openingAnchors[incoming.opening_a_id] : undefined;
   try {
-    packageData = fix.type === "wall" ? keepEndAnchors(packageData, setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value)))
+    packageData = fix.type === "wall" ? keepEndAnchors(packageData, setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value), { parentSide }))
       : fix.type === "height" ? setCeilingHeight(packageData, String(value))
       : fix.type === "angle" ? keepEndAnchors(packageData, setCornerAngle(packageData, fix.roomIndex, fix.corner, String(value)))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
-    const now = entry(packageData);
-    if (fix.type === "wall" && wasWholeWall && now?.mode === "door_anchor") {
-      // The room turned out wider or narrower than the wall it was entered through: where its door is, is asked
-      // like any door — the piece of wall, the distance from the corner (the room slides along).
-      currentRoomIndex = fix.roomIndex;
-      openingStep = { step: "side", id: now.opening_b_id, side: null, editing: true, reanchor: true };
-    }
   } catch (error) {
     showError(error);
   }
@@ -4520,7 +4515,26 @@ function maybeCreateAdjacent() {
   if (measured && !elements.createAdjacentButton.disabled) elements.createAdjacentButton.click();
 }
 for (const input of [elements.adjacentFirstLength, elements.adjacentSecondLength, elements.adjacentAnchorOffset]) {
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") input.blur();
+  });
   input.addEventListener("change", () => {
+    if (input === elements.adjacentSecondLength) {
+      const raw = input.value.trim();
+      try {
+        // One answer may name both measured walls in order, for example "4,5 на 4".
+        if (/\s+на\s+|[×*]|\d\s*[xх]\s*\d/iu.test(raw)) {
+          const [first, second] = spokenBalcony(raw);
+          elements.adjacentFirstLength.value = formatLength(first);
+          input.value = formatLength(second);
+        } else if (raw && !(decimal(raw) > 0)) {
+          input.value = spokenMeasurement(raw, "length");
+        }
+      } catch (error) {
+        showError(error);
+        return;
+      }
+    }
     if (input === elements.adjacentFirstLength && adjacentOppositeTap) {
       // The wall opposite the door named different: the room is not a rectangle, its own screen takes over.
       const tap = adjacentOppositeTap;
