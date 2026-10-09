@@ -211,6 +211,9 @@ figcaption i.inferred { border-top-style: solid; border-color: var(--measured); 
 .voice-status:not(.listening) .voice-stop { display: none; }
 .context-mic { position: fixed; z-index: 24; right: max(1rem, calc((100vw - 48rem) / 2 + 1rem)); bottom: calc(10rem + env(safe-area-inset-bottom)); display: grid; width: 3.6rem; min-height: 3.6rem; padding: 0; place-items: center; border-radius: 50%; color: white; background: var(--busy); border-color: color-mix(in srgb, var(--busy) 68%, #000); box-shadow: 0 0.55rem 1.5rem rgba(30, 122, 69, 0.24); font-size: 1.45rem; }
 .context-mic:hover:not(:disabled) { background: var(--busy); filter: brightness(1.05); }
+/* Held to speak: no text selection or call-out menu under the finger, and the button grows while it hears. */
+.context-mic { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.context-mic.held { transform: scale(1.18); box-shadow: 0 0 0 0.5rem color-mix(in srgb, var(--busy) 28%, transparent); }
 .context-mic[hidden] { display: none; }
 html, body { overscroll-behavior: none; }
 /* The first-room screen is one plan that fits the screen: nothing scrolls or bounces. */

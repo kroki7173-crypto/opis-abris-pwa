@@ -1408,6 +1408,7 @@ export function createAdjacentRoom(pkg, {
   anchorCorner = "start",
   anchorOffsetM = 0,
   shape = null,
+  doorAnchored = false,
 } = {}) {
   validatePackage(pkg);
   const parent = pkg.rooms[roomIndex];
@@ -1436,7 +1437,7 @@ export function createAdjacentRoom(pkg, {
   if (first < 0.05 || (second !== null && second < 0.05)) {
     throw new Error("Стены новой комнаты должны быть не меньше 0,05 м.");
   }
-  const fullWall = Math.abs(first - wall.length_m) <= 1e-6;
+  const fullWall = !doorAnchored && Math.abs(first - wall.length_m) <= 1e-6;
   let childOpeningOffset;
   let anchorOffset = 0;
   if (fullWall) {
@@ -1539,6 +1540,11 @@ export function createAdjacentRoom(pkg, {
   next.updated_at = new Date().toISOString();
   validatePackage(next);
   return next;
+}
+
+// При явно названном сдвиге новая комната может иметь ту же длину общей стены, но другую привязку двери.
+export function createDoorAnchoredRoom(pkg, options) {
+  return createAdjacentRoom(pkg, { ...options, doorAnchored: true });
 }
 
 // The rooms measured through this one, and further through them: they hang on its doors.

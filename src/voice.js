@@ -116,6 +116,19 @@ function bareNumber(value, kind) {
   return Math.floor(value / 100) + (value % 100) / 100;
 }
 
+// A word that is part of a spoken size: a number word, a unit or a joining word of a number ("целых", "с половиной").
+// The phrase reader (phrase.js) cuts the sizes out of a longer phrase with it and reads each with spokenMeasurement.
+const SIZE_WORDS = new Set([
+  ...METER_WORDS, ...CENTIMETER_WORDS, ...WHOLE_WORDS, "запятая", "половиной", "полтора", "полторы", "полметра",
+  "десятых", "сотых",
+]);
+export function isNumberWord(token) {
+  return NUMBERS.has(token) || token === "полтора" || token === "полторы" || token === "полметра";
+}
+export function isSizeWord(token) {
+  return isNumberWord(token) || SIZE_WORDS.has(token);
+}
+
 // Voice field modes that are numbers, and how a bare number is read in each.
 export const MEASUREMENT_KINDS = { measurement: "length", thickness: "thickness", width: "width" };
 
@@ -403,7 +416,10 @@ export function createVoiceController(scope, onStatus = () => {}) {
     if (request !== requestVersion) return null;
     const recognition = new Recognition();
     recognition.lang = "ru-RU";
-    recognition.continuous = false;
+    // A measuring phrase (Bolat, 10.10.2026) has pauses between its sentences: it is heard on until a longer silence
+    // or "Остановить", not cut at the first finished sentence.
+    const phrase = mode === "phrase";
+    recognition.continuous = phrase;
     // Interim results let the page notice the end of speech itself: iOS keeps the microphone open long after it.
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
@@ -448,9 +464,12 @@ export function createVoiceController(scope, onStatus = () => {}) {
           reject(error);
         }
       };
+      // "Остановить" during a phrase keeps what was said: the technician has finished speaking.
+      session.finish = () => (session.heard ? deliver(session.heard) : session.cancel());
       recognition.onstart = () => {
         onListening(true);
-        onStatus("Говорите. После заполнения обязательно проверьте значение.", false);
+        // A phrase has its own words on the screen ("Слушаю фразу…"), set by the page in onListening.
+        if (!phrase) onStatus("Говорите. После заполнения обязательно проверьте значение.", false);
         session.timer = setTimeout(() => {
           if (session.heard) {
             deliver(session.heard);
@@ -466,7 +485,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
         if (settled) return;
         const results = [...event.results];
         session.heard = results.map((result) => result[0].transcript).join(" ").replace(/\s+/gu, " ").trim();
-        if (results.at(-1)?.isFinal) {
+        if (results.at(-1)?.isFinal && !phrase) {
           deliver(session.heard);
           return;
         }
@@ -501,5 +520,13 @@ export function createVoiceController(scope, onStatus = () => {}) {
     });
   }
 
-  return { capability, listen, stop };
+  // Ends listening now and hands over what was heard (a phrase), or nothing if nothing was heard.
+  function finish() {
+    if (!activeSession?.finish) return stop();
+    requestVersion += 1;
+    activeSession.finish();
+    return true;
+  }
+
+  return { capability, listen, stop, finish };
 }

@@ -64,6 +64,7 @@ import {
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
 import { addressLesson, createVoiceController, spokenAddress, spokenBalcony, spokenMeasurement } from "./voice.js";
+import { readPhrase } from "./phrase.js";
 import { historyRecord, updateZoomView } from "./interaction.js";
 import { planRoomAnnotations } from "./plan_annotations.js";
 import { MAX_VOICE_NOTES, MAX_VOICE_NOTE_BYTES, MAX_VOICE_NOTES_TOTAL_BYTES, MAX_VOICE_NOTE_MS,
@@ -97,7 +98,7 @@ const ids = [
   "errorMessage", "undoToast", "voiceStatus", "voiceStatusText", "voiceTarget", "voiceStopButton",
   "contextMicButton", "headerTitle", "themeToggle", "themeColor", "undoButton", "redoButton",
 
-  "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "hintCard", "hintText",
+  "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "micHoldSetting", "hintCard", "hintText",
   "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
   "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "removeRoomButton", "summaryHeight",
@@ -410,6 +411,218 @@ function stopContextVoice() {
   setVoiceStatus("");
 }
 
+// Measuring by phrase (Bolat, 09–10.10.2026): the green microphone pressed instead of the blinking wall hears a whole
+// phrase — "справа 1,6 дверь, на правой стене дверь, стена правая 1,8", "вхожу в правую дверь, три метра правая
+// стенка". A tap on a wall still asks one number: that way stays, it is where technicians start.
+// phrase.js reads the words; phrase_apply.js (Codex, docs/tz/2026-10-10_phrase-apply.md) turns them into the plan.
+let phraseApplyModule = null;
+let phraseListening = false;
+// Openings a phrase placed in the middle of their wall without a distance: "?" on the drawing, a remark at the end.
+let phraseUnplaced = [];
+function loadPhraseApply() {
+  phraseApplyModule ??= import("./phrase_apply.js").catch((error) => {
+    phraseApplyModule = null;
+    throw error;
+  });
+  return phraseApplyModule;
+}
+function phraseModeAvailable() {
+  if (!voiceController.capability().available || voiceListening) return false;
+  if (currentScreen === "openings") {
+    // An open balcony question does not take the green microphone: it is answered by its own red button.
+    return Boolean(packageData?.rooms?.[currentRoomIndex]) && !openingStep && !wallFix;
+  }
+  if (currentScreen === "room") return !packageData?.rooms?.length && (entrance.step === "wall" || entrance.step === "measure");
+  return false;
+}
+// The wall of the door one came in through: the entrance in the first room, the door wall behind a door.
+function entryWallOf(roomIndex) {
+  const room = packageData?.rooms?.[roomIndex];
+  if (!room || roomIndex === 0) return entrance.wall ?? 0;
+  const connection = packageData.connections?.find((item) => item.room_b_id === room.id);
+  const index = room.walls.findIndex((wall) => wall.id === connection?.wall_b_id);
+  return index >= 0 ? index : 0;
+}
+// The green microphone in two ways (Bolat, 10.10.2026, "Настройки"): a touch — speak, a pause of 2,5 s ends it; or
+// held — it hears while the finger is on it, letting go ends it. A tap on a wall is not affected.
+const MIC_HOLD_KEY = "opis-pwa-mic-hold";
+function micHold() {
+  return storedValue(MIC_HOLD_KEY, "0") === "1";
+}
+let micHeld = false;
+let micClickSwallowed = false;
+async function startPhraseVoice({ hold = false } = {}) {
+  const run = ++activeVoiceRun;
+  phraseListening = true;
+  // Held, the button keeps its look while the finger is on it; it is not disabled under the finger.
+  if (!hold) elements.contextMicButton.disabled = true;
+  try {
+    await voiceController.listen({
+      mode: "phrase",
+      timeoutMs: hold ? 180000 : 60000,
+      silenceMs: hold ? 180000 : 2500,
+      onListening(listening) {
+        if (run !== activeVoiceRun) return;
+        voiceListening = listening;
+        if (!hold) elements.contextMicButton.disabled = listening;
+        elements.contextMicButton.classList.toggle("held", hold && listening);
+        elements.voiceStatus.classList.toggle("listening", listening);
+        if (listening) {
+          elements.voiceStatus.hidden = false;
+          elements.voiceStatus.classList.remove("is-error");
+          elements.voiceStatusText.textContent = "Микрофон работает";
+          elements.voiceTarget.textContent = hold
+            ? "Слушаю, пока держите: стены, двери, окна. Отпустите — запишу."
+            : "Слушаю фразу: стены, двери, окна. Закончили — «Остановить».";
+        }
+      },
+      onValue(_value, transcript) {
+        if (run !== activeVoiceRun) return;
+        historyActionId += 1;
+        applyPhraseText(transcript).catch(showError);
+      },
+    });
+  } catch {
+    // The voice error is already in the panel; a tap on a wall still works.
+  } finally {
+    if (run === activeVoiceRun) {
+      phraseListening = false;
+      voiceListening = false;
+      elements.contextMicButton.disabled = !voiceController.capability().available;
+      elements.contextMicButton.classList.remove("held");
+      elements.voiceStatus.classList.remove("listening");
+    }
+  }
+}
+// Held: the finger down starts the phrase, lifting it hands over what was said. The click that follows is not a
+// second press.
+function installMicHold() {
+  const button = elements.contextMicButton;
+  button.addEventListener("pointerdown", (event) => {
+    micClickSwallowed = false;
+    if (!micHold() || !phraseModeAvailable()) return;
+    event.preventDefault();
+    try { button.setPointerCapture(event.pointerId); } catch { /* Not every browser captures. */ }
+    micHeld = true;
+    micClickSwallowed = true;
+    startPhraseVoice({ hold: true });
+  });
+  const release = () => {
+    if (!micHeld) return;
+    micHeld = false;
+    voiceController.finish();
+  };
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, release);
+  button.addEventListener("contextmenu", (event) => { if (micHold()) event.preventDefault(); });
+}
+async function applyPhraseText(text) {
+  const read = readPhrase(text);
+  let module;
+  try {
+    module = await loadPhraseApply();
+  } catch {
+    showError("Фраза пока не подключена. Коснитесь стены и назовите число.");
+    return;
+  }
+  const firstRoom = !packageData?.rooms?.length;
+  const roomIndex = firstRoom ? 0 : currentRoomIndex;
+  const entryWall = entryWallOf(roomIndex);
+  const currentWall = currentScreen === "room" ? (activeRoomWall ?? entrance.wall ?? 0) : entryWall;
+  // Walls of the first room already named by tap are known to the phrase.
+  const known = {};
+  if (firstRoom && decimal(elements.firstLength.value) > 0) known[0] = decimal(elements.firstLength.value);
+  if (firstRoom && decimal(elements.secondLength.value) > 0) known[1] = decimal(elements.secondLength.value);
+  const result = module.applyPhrase(packageData, read, { roomIndex, entryWall, currentWall,
+    firstRoom: firstRoom ? { lengths: known } : null });
+  const heard = read.unknown.length ? ` Не понял: «${read.unknown.join(" ")}».` : "";
+  if (result.error) {
+    showError(`${result.error}${heard} Ничего не записано — скажите ещё раз или коснитесь стены.`);
+    return;
+  }
+  clearError();
+  if (firstRoom && !result.pkg?.rooms?.length) {
+    // Not enough for a room yet: what is known goes into the first-room fields, the tap way goes on from there.
+    for (const [wallIndex, length] of Object.entries(result.firstRoom?.lengths ?? {})) {
+      const input = Number(wallIndex) % 2 === 0 ? elements.firstLength : elements.secondLength;
+      // Only shown: a "change" would start the tap way's entrance-door step in the middle of the phrase's question.
+      input.value = formatLength(length);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    renderRoomInput();
+  } else {
+    packageData = result.pkg;
+    Object.assign(openingAnchors, result.anchors ?? {});
+    if (firstRoom) {
+      fillRoomForm(packageData.rooms[0]);
+      entrance = { ...entrance, step: "measure" };
+    }
+    currentRoomIndex = result.roomIndex ?? roomIndex;
+    clearOpeningEdit();
+    const placeQuestions = (result.questions ?? []).filter((question) => question.type === "place" && question.openingId);
+    phraseUnplaced = [...new Set([...phraseUnplaced, ...placeQuestions.map((question) => question.openingId)])];
+    showScreen("openings");
+  }
+  const said = result.understood?.length ? `Понял: ${result.understood.join("; ")}.` : "Ничего не понял.";
+  showNotice(said + heard, 9000);
+  await persist();
+  // What is missing is asked as the next action: the first ↶ closes the question, the next one erases the phrase.
+  const question = result.questions?.[0];
+  if (question) {
+    historyActionId += 1;
+    openPhraseQuestion(question);
+  }
+}
+function openPhraseQuestion(question) {
+  if (Number.isInteger(question.roomIndex) && packageData?.rooms?.[question.roomIndex]) currentRoomIndex = question.roomIndex;
+  if (question.type === "place" && question.openingId) {
+    askPhrasePlace(question.openingId, question.anchor ?? null);
+    return;
+  }
+  if (question.type === "balcony_size" && question.openingId) {
+    balconyStep = { openingId: question.openingId, asking: true, doorSide: "left" };
+    showScreen("openings");
+    schedulePersist();
+    return;
+  }
+  if (question.type === "kind" && Number.isInteger(question.wallIndex)) {
+    openingStep = { step: "kind", wallIndex: question.wallIndex };
+    showScreen("openings");
+    schedulePersist();
+    return;
+  }
+  if (question.type === "length" && Number.isInteger(question.wallIndex) && currentScreen === "openings") {
+    startWallFix(question.wallIndex);
+    return;
+  }
+  if (question.type === "length" && Number.isInteger(question.wallIndex) && currentScreen === "room") {
+    // The first room still needs this wall: it blinks, a tap on it (or the green microphone) names it.
+    activeRoomWall = question.wallIndex;
+    renderRoomInput();
+    refreshVoiceTarget();
+    if (question.text) showNotice(question.text, 9000);
+    schedulePersist();
+    return;
+  }
+  if (question.text) showNotice(question.text, 9000);
+}
+// The distance a phrase did not say: the pieces of wall beside the opening blink, a tap on one asks the distance
+// from that corner — or straight away from the corner the phrase named ("дверь справа").
+function askPhrasePlace(openingId, anchor) {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room?.openings?.some((item) => item.id === openingId)) return;
+  clearOpeningEdit(false);
+  hideWallFix();
+  balconyStep = null;
+  openingStep = { step: "side", id: openingId, side: null, editing: true, distanceOnly: true, phrase: true };
+  if (currentScreen !== "openings") showScreen("openings");
+  if (anchor === "start" || anchor === "end") {
+    startOpeningDistance(anchor);
+    return;
+  }
+  renderOpenings();
+  schedulePersist();
+}
+
 function installVoiceInputs() {
   const capability = voiceController.capability();
   for (const [id, mode, label] of VOICE_FIELDS) {
@@ -621,17 +834,18 @@ function describeChange(from, to) {
   if (JSON.stringify(from?.entrance?.anchor ?? null) !== JSON.stringify(to?.entrance?.anchor ?? null)
     || from?.entrance?.side !== to?.entrance?.side) return "расстояние до двери";
   if (from?.voicePromptOpen !== to?.voicePromptOpen) return "микрофон";
+  if (Boolean(from?.balconyStep?.asking) !== Boolean(to?.balconyStep?.asking)) return "вопрос о балконе";
   if (from?.currentRoomIndex !== to?.currentRoomIndex) return "переход в комнату";
   if (JSON.stringify(from?.openingStep ?? null) !== JSON.stringify(to?.openingStep ?? null)) return "шаг у стены";
   if (from?.screen !== to?.screen) return "переход между экранами";
   return "";
 }
 let noticeTimer = null;
-function showNotice(text) {
+function showNotice(text, durationMs = 3500) {
   clearTimeout(noticeTimer);
   elements.undoToast.textContent = text;
   elements.undoToast.hidden = false;
-  noticeTimer = setTimeout(() => { elements.undoToast.hidden = true; }, 3500);
+  noticeTimer = setTimeout(() => { elements.undoToast.hidden = true; }, durationMs);
 }
 async function moveHistory(direction) {
   const nextIndex = historyCursor + direction;
@@ -690,8 +904,23 @@ function initializeUi() {
   // Settings and help are full tabs like "Объекты", not pop-up panels (Bolat, 05.10.2026).
   elements.settingsNavButton.addEventListener("click", () => showScreen("settings"));
   elements.helpNavButton.addEventListener("click", () => showScreen("help"));
-  elements.contextMicButton.addEventListener("click", startContextVoice);
-  elements.voiceStopButton.addEventListener("click", stopContextVoice);
+  // The green microphone pressed instead of a wall hears a phrase; with a question open it answers that question.
+  elements.contextMicButton.addEventListener("click", () => {
+    if (micClickSwallowed) {
+      micClickSwallowed = false;
+      return;
+    }
+    if (phraseModeAvailable()) startPhraseVoice();
+    else startContextVoice();
+  });
+  installMicHold();
+  elements.micHoldSetting.checked = micHold();
+  elements.micHoldSetting.addEventListener("change", () => storeValue(MIC_HOLD_KEY, elements.micHoldSetting.checked ? "1" : "0"));
+  // "Остановить" during a phrase ends it and keeps what was said.
+  elements.voiceStopButton.addEventListener("click", () => {
+    if (phraseListening) voiceController.finish();
+    else stopContextVoice();
+  });
   elements.undoButton.addEventListener("click", () => moveHistory(-1).catch(showError));
   elements.redoButton.addEventListener("click", () => moveHistory(1).catch(showError));
   elements.measureNavButton.addEventListener("click", () => {
@@ -1058,6 +1287,7 @@ function draftValue() {
     issueBaseline,
     returnToIssues,
     openingAnchors,
+    phraseUnplaced,
     package: packageData,
     currentRoomIndex,
     pendingAdjacent,
@@ -1187,6 +1417,7 @@ function restoreForm(draft) {
   issueBaseline = Array.isArray(draft?.issueBaseline) ? draft.issueBaseline : null;
   returnToIssues = Boolean(draft?.returnToIssues);
   openingAnchors = draft?.openingAnchors && typeof draft.openingAnchors === "object" ? { ...draft.openingAnchors } : {};
+  phraseUnplaced = Array.isArray(draft?.phraseUnplaced) ? draft.phraseUnplaced.filter((id) => typeof id === "string") : [];
   // A door or storage half placed when the page reloaded continues at the same question.
   openingStep = restoreOpeningStep(draft?.openingStep);
   interiorStep = restoreInteriorStep(draft?.interiorStep);
@@ -1881,6 +2112,25 @@ function drawOpeningDistances(canvas, room, skipId = null) {
     if (opening.id === skipId) continue;
     const wallIndex = openingWallIndex(room, opening);
     if (wallIndex < 0) continue;
+    if (phraseUnplaced.includes(opening.id)) {
+      // Placed by a phrase without its distance: a red "?" in the frame, a tap asks it.
+      const [sx, sy, ex, ey] = canvasWallSegment(canvas, room, wallIndex, opening);
+      const out = outward([sx, sy], [ex, ey]);
+      const x = (sx + ex) / 2 - out[0] * 34;
+      const y = (sy + ey) / 2 - out[1] * 34;
+      context.beginPath();
+      if (context.roundRect) context.roundRect(x - 22, y - 18, 44, 36, 10);
+      else context.rect(x - 22, y - 18, 44, 36);
+      context.fillStyle = uiColor("--field", "#ffffff");
+      context.fill();
+      context.lineWidth = 3;
+      context.strokeStyle = "#e5252a";
+      context.stroke();
+      context.fillStyle = "#e5252a";
+      context.fillText("?", x, y + 1);
+      canvas.offsetHitboxes.push({ openingId: opening.id, side: null, unplaced: true, x, y, radius: 46 });
+      continue;
+    }
     const side = openingAnchorSide(room, opening);
     const distance = openingDistance(room, opening, side);
     if (!(distance > 0.004)) continue;
@@ -3795,6 +4045,15 @@ function validationIssues(pkg) {
     return issues;
   }
   for (const problem of planProblems(pkg)) issues.push({ ...problemIssue(pkg, problem), point: problem.point });
+  // A door or window a phrase placed without its distance (Bolat, 09.10.2026): skipped during the survey, named here.
+  pkg.rooms.forEach((room, roomIndex) => {
+    for (const opening of room.openings) {
+      if (!phraseUnplaced.includes(opening.id)) continue;
+      const what = { door: "двери", window: "окна", passage: "проёма" }[opening.kind] ?? "проёма";
+      issues.push({ key: "unplaced:" + opening.id, text: `«${room.name}»: не названо расстояние от угла до ${what}.`,
+        action: { type: "opening", roomIndex, openingId: opening.id }, fixes: [] });
+    }
+  });
   const seen = new Set();
   return issues.filter((issue) => !seen.has(issue.key) && seen.add(issue.key));
 }
@@ -3813,6 +4072,10 @@ function followIssue(action) {
     showScreen("openings");
   } else if (action.type === "door") {
     goThroughOpening(action.roomIndex, action.openingId);
+  } else if (action.type === "opening") {
+    currentRoomIndex = action.roomIndex;
+    showScreen("openings");
+    askPhrasePlace(action.openingId, null);
   }
   persist();
 }
@@ -4317,6 +4580,7 @@ function currentDraftFromRecord(record) {
     issueBaseline: record.issueBaseline ?? null,
     entrance: record.entrance ?? null,
     openingAnchors: record.openingAnchors ?? {},
+    phraseUnplaced: record.phraseUnplaced ?? [],
     form: record.form ?? {},
   };
 }
@@ -4860,6 +5124,7 @@ elements.startButton.addEventListener("click", async () => {
     issueBaseline = null;
     returnToIssues = false;
     openingAnchors = {};
+    phraseUnplaced = [];
     elements.doorAnchor.value = "";
     activeRoomWall = 0;
     currentRoomIndex = 0;
@@ -5355,7 +5620,8 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     .filter((box) => box.distance < box.radius)
     .sort((a, b) => a.distance - b.distance)[0];
   if (distanceLabel && !(openingStep?.step === "side" && openingStep.id === distanceLabel.openingId)) {
-    fixOpeningDistance(distanceLabel.openingId, distanceLabel.side);
+    if (distanceLabel.unplaced) askPhrasePlace(distanceLabel.openingId, null);
+    else fixOpeningDistance(distanceLabel.openingId, distanceLabel.side);
     return;
   }
   // The letter of a corner of a free-form room: the corner is said again (it used to be fixed only through the shape
@@ -5519,6 +5785,14 @@ elements.openingOffset.addEventListener("change", () => {
   }
   clearError();
   openingAnchors[opening.id] = openingStep.side;
+  if (phraseUnplaced.includes(opening.id) || openingStep.phrase) {
+    // The distance a phrase left out: answered, the "?" goes; nothing else is asked (thickness is not asked by phrase).
+    phraseUnplaced = phraseUnplaced.filter((id) => id !== opening.id);
+    openingStep = null;
+    renderOpenings();
+    persist();
+    return;
+  }
   if (opening.kind !== "door" && !openingStep.distanceOnly) {
     // A window or passage has no standard width: it is asked next, keeping the distance just named.
     openingStep = { step: "width", id: opening.id, side: openingStep.side, distance: value, editing: openingStep.editing };
