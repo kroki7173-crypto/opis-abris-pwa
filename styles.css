@@ -290,7 +290,9 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .canvas-data-inputs { position: fixed; left: 50%; bottom: 0; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .canvas-data-inputs input { width: 1px; min-height: 1px; padding: 0; border: 0; opacity: 0.01; }
 .plan-stage { margin-top: 0.65rem; padding: 0.2rem; border: 0; background: var(--field); }
-.plan-stage canvas { height: clamp(20rem, 46dvh, 28rem); min-height: 0; aspect-ratio: auto; touch-action: pan-y; }
+.plan-stage canvas { height: clamp(20rem, 46dvh, 28rem); min-height: 0; aspect-ratio: auto; touch-action: pan-y; transform-origin: center center; }
+.plan-stage canvas.zoomed { touch-action: none; cursor: grab; }
+.plan-stage figcaption { position: relative; z-index: 2; background: var(--field); }
 .plan-tip { justify-content: center; padding: 0.35rem 0.2rem; text-align: center; }
 .object-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; margin-top: 0.65rem; }
 .tool-button { display: grid; min-width: 0; min-height: 3.6rem; margin: 0; padding: 0.5rem 0.35rem; place-items: center; gap: 0.1rem; font-size: 0.78rem; }
@@ -412,3 +414,23 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .summary-height { display: flex; align-items: center; gap: 0.5rem; margin: 0.6rem 0 0; font-weight: 600; }
 .summary-height[hidden] { display: none; }
 .summary-height .fix-number { min-height: 2.2rem; padding: 0.2rem 0.7rem; border-color: var(--nav-border); }
+
+
+.room-note-trigger { margin-left: auto; white-space: nowrap; }
+.room-note-dialog .dialog-body { max-height: 80dvh; overflow: auto; }
+.room-note-list { display: grid; gap: 0.65rem; margin-top: 0.75rem; }
+.room-note-row { display: grid; gap: 0.35rem; padding: 0.65rem; border: 1px solid var(--border); border-radius: 0.7rem; }
+.room-note-row audio { width: 100%; }
+.room-note-row .quiet { justify-self: end; }
+.summary-notes { margin: 0.8rem 0; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.7rem; }
+.summary-notes p { margin: 0.4rem 0; color: var(--muted); }
+.summary-note-room { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.25rem 0; }
+.summary-note-room button { width: auto; }
+
+.balcony-side-choice { display: block; min-height: 6.25rem; margin: 0.65rem 0; padding: 0.35rem; touch-action: manipulation; }
+.balcony-side-choice svg { display: block; width: 100%; height: 5.3rem; fill: none; stroke: var(--text); stroke-linecap: square; stroke-linejoin: miter; }
+.balcony-side-choice .symbol-wall { stroke-width: 4; }
+.balcony-side-choice .symbol-frame { stroke-width: 2; }
+.balcony-side-choice .symbol-door { stroke-width: 1.8; }
+.balcony-side-choice .symbol-glass { stroke-width: 1.1; }
+.balcony-side-mirror { transform: scaleX(-1); }

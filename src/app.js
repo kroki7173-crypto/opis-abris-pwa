@@ -5,6 +5,7 @@ import {
   addInteriorToPackage,
   addOpeningToPackage,
   balconyForOpening,
+  balconySymbolWing,
   balconyPoints,
   connectionForOpening,
   connectionsForWall,
@@ -50,6 +51,9 @@ import {
   saveDraft,
   saveHistory,
   saveSurvey,
+  saveVoiceNote,
+  loadVoiceNote,
+  deleteVoiceNotesForPackage,
 } from "./storage.js";
 import {
   archiveEntriesForDay,
@@ -60,6 +64,10 @@ import {
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
 import { addressLesson, createVoiceController, spokenAddress, spokenBalcony, spokenMeasurement } from "./voice.js";
+import { historyRecord, updateZoomView } from "./interaction.js";
+import { planRoomAnnotations } from "./plan_annotations.js";
+import { MAX_VOICE_NOTES, MAX_VOICE_NOTE_BYTES, MAX_VOICE_NOTES_TOTAL_BYTES, MAX_VOICE_NOTE_MS,
+  VOICE_NOTE_MIMES, packageWithVoiceNotes } from "./voice_notes.js";
 
 const ids = [
   "startScreen", "roomScreen", "openingsScreen", "interiorScreen", "adjacentScreen", "shapeScreen", "doneScreen",
@@ -76,7 +84,10 @@ const ids = [
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
   "interiorPartition", "interiorDoorWidth", "interiorDoorWall", "storageFields",
   "addInteriorButton", "interiorCancelEditButton", "interiorList", "interiorDoneButton",
-  "finishButton", "openingsRoomName", "wallLockHint", "adjacentFrom", "adjacentName",
+  "finishButton", "openingsRoomName", "wallLockHint", "roomNoteButton", "roomNoteDialog", "roomNoteTitle",
+  "roomNoteClose", "roomNoteRecord", "roomNoteCancel", "roomNoteStatus", "roomNoteList",
+  "balconySideDialog", "balconySideCancel",
+  "summaryNotes", "summaryNotesText", "summaryNotesRooms", "adjacentFrom", "adjacentName",
   "adjacentFirstLength", "adjacentSecondLength", "adjacentCanvas", "adjacentOverviewCanvas", "adjacentPreview",
   "adjacentStatus", "adjacentBindingHint", "adjacentAnchorPanel", "adjacentAnchorLead",
   "adjacentAnchorCorner", "adjacentAnchorOffset",
@@ -148,11 +159,17 @@ let saveTimer = null;
 let catalogRenderToken = 0;
 let activeVoiceTarget = null;
 let voiceListening = false;
+let voicePromptOpen = false;
+let voicePromptId = null;
+let activeVoiceRun = 0;
 let voicePanelTimer = null;
 let activeRoomWall = 0;
 let historyEntries = [];
 let historyCursor = -1;
 let historyRestoring = false;
+let historyActionId = 0;
+document.addEventListener("pointerdown", () => { historyActionId += 1; }, true);
+document.addEventListener("keydown", (event) => { if (!event.repeat) historyActionId += 1; }, true);
 let roomPulseFrame = null;
 let openingPulseFrame = null;
 let adjacentPulseFrame = null;
@@ -165,12 +182,14 @@ let openingPlacementActive = false;
 let openingStep = null;
 // «Дверь», «Окно», «Проём» or «Балкон» pressed before a wall: the next tap on a wall places it there.
 let armedKind = null;
+let armedBalconySide = null;
+let balconySideAction = null;
 // Which corner each opening was measured from ({ id: "start" | "end" }): the list shows the distance from that one.
 // Kept in the draft on the phone only; the measurement file does not carry it.
 let openingAnchors = {};
 // The balcony of a door on the doors screen (Bolat, 08.10.2026): { openingId, asking } — asking: its size is being said.
 let balconyStep = null;
-const OPENING_DEFAULT_WIDTH = { door: 0.8, window: 1.3, passage: 0.9, balcony: 0.8 };
+const OPENING_DEFAULT_WIDTH = { door: 0.8, window: 1.15, passage: 0.9, balcony: 0.8 };
 const OPENING_GENITIVE = { door: "двери", window: "окна", passage: "проёма", balcony: "балкона" };
 // How far from the wall of the opening being placed a tap still counts as that wall (canvas points, about a finger).
 const ASKED_WALL_REACH = 40;
@@ -185,7 +204,7 @@ let startMode = "new";
 // First-room guide (Bolat, 05.10.2026): the entrance door comes first. Tap the blinking wall -> the door appears;
 // the walls left and right of the door blink in turn -> tap one and name the distance from it to the door ->
 // "Толщина ?" -> the door wall, then the next one.
-const ENTRANCE_WIDTH_M = 0.8;
+const ENTRANCE_WIDTH_M = 1.0;
 function newEntrance() {
   return { step: "wall", wall: 0, side: null, anchor: null, thickness: null };
 }
@@ -297,7 +316,7 @@ function refreshVoiceTarget() {
   if (id) selectVoiceTargetById(id);
 }
 
-async function startContextVoice() {
+async function startContextVoice({ resume = false } = {}) {
   if (!activeVoiceTarget || voiceListening) return;
   const capability = voiceController.capability();
   if (!capability.available) {
@@ -306,6 +325,13 @@ async function startContextVoice() {
     return;
   }
   const { input, mode, label } = activeVoiceTarget;
+  const run = ++activeVoiceRun;
+  voicePromptOpen = true;
+  voicePromptId = input.id;
+  if (!resume && packageData?.package_id) {
+    historyActionId += 1;
+    recordHistory();
+  }
   elements.contextMicButton.disabled = true;
   try {
     await voiceController.listen({
@@ -313,6 +339,7 @@ async function startContextVoice() {
       timeoutMs: 8000,
       addressLessons: mode === "address" ? addressLessons() : null,
       onListening(listening) {
+        if (run !== activeVoiceRun) return;
         voiceListening = listening;
         elements.contextMicButton.disabled = listening;
         elements.voiceStatus.classList.toggle("listening", listening);
@@ -324,6 +351,10 @@ async function startContextVoice() {
         }
       },
       onValue(value, transcript) {
+        if (run !== activeVoiceRun) return;
+        voicePromptOpen = false;
+        voicePromptId = null;
+        historyActionId += 1;
         input.value = value;
         if (input === elements.address) {
           // Remembered so a hand correction of what was heard can be learned ("Запомнить исправление").
@@ -348,20 +379,32 @@ async function startContextVoice() {
       elements.balconySize.focus();
     }
   } finally {
-    voiceListening = false;
-    elements.contextMicButton.disabled = !voiceController.capability().available;
-    elements.voiceStatus.classList.remove("listening");
-    // Whatever ended the listening, a calm panel never stays on the screen.
-    if (!elements.voiceStatus.hidden && !elements.voiceStatus.classList.contains("is-error")) {
-      clearTimeout(voicePanelTimer);
-      voicePanelTimer = setTimeout(() => { elements.voiceStatus.hidden = true; }, 2800);
+    if (run === activeVoiceRun) {
+      voiceListening = false;
+      if (voicePromptOpen) {
+        voicePromptOpen = false;
+        voicePromptId = null;
+        recordHistory();
+      }
+      elements.contextMicButton.disabled = !voiceController.capability().available;
+      elements.voiceStatus.classList.remove("listening");
+      // Whatever ended the listening, a calm panel never stays on the screen.
+      if (!elements.voiceStatus.hidden && !elements.voiceStatus.classList.contains("is-error")) {
+        clearTimeout(voicePanelTimer);
+        voicePanelTimer = setTimeout(() => { elements.voiceStatus.hidden = true; }, 2800);
+      }
     }
   }
 }
 
 function stopContextVoice() {
+  activeVoiceRun += 1;
   voiceController.stop();
+  const hadPrompt = voicePromptOpen;
+  voicePromptOpen = false;
+  voicePromptId = null;
   voiceListening = false;
+  if (hadPrompt && !historyRestoring) recordHistory();
   elements.contextMicButton.disabled = !voiceController.capability().available;
   // Stopped by hand: the panel simply goes away, there is nothing left to press.
   setVoiceStatus("");
@@ -478,20 +521,6 @@ function updateHistoryButtons() {
   elements.undoButton.disabled = !usable || historyCursor <= 0;
   elements.redoButton.disabled = !usable || historyCursor >= historyEntries.length - 1;
 }
-// ↶ is an eraser for what was written down (Bolat, 08.10.2026: it jumped between screens and needed several presses
-// for one wrong number). Only the record counts: the plan, the first room's steps and sizes, the shape being drawn.
-// Screens, the selected wall and the step being asked are not an action; they are kept with the record they belong to,
-// so ↶ comes back exactly where the undone number was said, and asks it again.
-function historyRecord(value) {
-  const shape = value.shape ? { count: value.shape.count, walls: value.shape.walls, angles: value.shape.angles,
-    clockwise: value.shape.clockwise, thickness: value.shape.thickness } : null;
-  const form = value.form ?? {};
-  return JSON.stringify({
-    package: value.package, entrance: value.entrance, shape, pendingShape: value.pendingShape,
-    openingAnchors: value.openingAnchors,
-    sizes: [form.address, form.roomName, form.firstLength, form.secondLength, form.wallThickness],
-  });
-}
 function historyObject(value) {
   return value?.package?.package_id ?? null;
 }
@@ -503,13 +532,15 @@ function recordHistory(value = draftValue()) {
     historyCursor = -1;
   }
   const record = historyRecord(value);
-  if (historyCursor >= 0 && historyEntries[historyCursor]?.record === record) {
-    // The same record seen from another screen or step: the entry keeps the latest view of it.
-    historyEntries[historyCursor].value = structuredClone(value);
+  if (historyCursor >= 0 && historyActionId > 0 && historyEntries[historyCursor]?.actionId === historyActionId) {
+    // An answer and the screen it opens are one user action.
+    historyEntries[historyCursor] = { record, value: structuredClone(value), actionId: historyActionId };
+    updateHistoryButtons();
     return;
   }
+  if (historyCursor >= 0 && historyEntries[historyCursor]?.record === record) return;
   historyEntries = historyEntries.slice(0, historyCursor + 1);
-  historyEntries.push({ record, value: structuredClone(value) });
+  historyEntries.push({ record, value: structuredClone(value), actionId: historyActionId });
   if (historyEntries.length > 50) historyEntries.shift();
   historyCursor = historyEntries.length - 1;
   updateHistoryButtons();
@@ -532,7 +563,7 @@ function restoreHistory(saved, draft) {
   const object = historyObject(draft);
   if (!object || !Number.isInteger(cursor) || cursor < 0 || cursor >= entries.length ||
       entries.some((value) => historyObject(value) !== object)) return;
-  historyEntries = entries.map((value) => ({ record: historyRecord(value), value }));
+  historyEntries = entries.map((value) => ({ record: historyRecord(value), value, actionId: null }));
   historyCursor = cursor;
   updateHistoryButtons();
 }
@@ -589,6 +620,10 @@ function describeChange(from, to) {
   if (was.wallThickness !== now.wallThickness || from?.entrance?.thickness !== to?.entrance?.thickness) return "толщина стены";
   if (JSON.stringify(from?.entrance?.anchor ?? null) !== JSON.stringify(to?.entrance?.anchor ?? null)
     || from?.entrance?.side !== to?.entrance?.side) return "расстояние до двери";
+  if (from?.voicePromptOpen !== to?.voicePromptOpen) return "микрофон";
+  if (from?.currentRoomIndex !== to?.currentRoomIndex) return "переход в комнату";
+  if (JSON.stringify(from?.openingStep ?? null) !== JSON.stringify(to?.openingStep ?? null)) return "шаг у стены";
+  if (from?.screen !== to?.screen) return "переход между экранами";
   return "";
 }
 let noticeTimer = null;
@@ -603,10 +638,11 @@ async function moveHistory(direction) {
   if (!historyUsable() || nextIndex < 0 || nextIndex >= historyEntries.length) return;
   const before = draftValue();
   const snapshot = structuredClone(historyEntries[nextIndex].value);
+  historyRestoring = true;
+  stopContextVoice();
   const what = describeChange(direction < 0 ? snapshot : before, direction < 0 ? before : snapshot);
   showNotice(`${direction < 0 ? "Отменено" : "Возвращено"}: ${what || "последнее действие"}`);
   historyCursor = nextIndex;
-  historyRestoring = true;
   packageData = snapshot.package ?? null;
   restoreForm(snapshot);
   currentRoomIndex = Number.isInteger(snapshot.currentRoomIndex) ? snapshot.currentRoomIndex : 0;
@@ -615,43 +651,28 @@ async function moveHistory(direction) {
   await persist();
   historyRestoring = false;
   updateHistoryButtons();
-  if (direction < 0) reaskUndone(before, snapshot);
+  resumeHistoryQuestion(before, snapshot, direction);
 }
-// After ↶ the number that was erased is asked again, where it is written (Bolat, 08.10.2026: "стрелка должна снова
-// вернуть на расстояние до угла"). The microphone opens only for a question that takes the answer.
-function reaskUndone(before, snapshot) {
-  if (currentScreen === "room") {
+// The restored question owns its wall and microphone target; a data difference must not pick another wall.
+function resumeHistoryQuestion(before, snapshot, direction) {
+  if (snapshot.voicePromptOpen) {
+    const input = document.getElementById(snapshot.voicePromptId);
+    const definition = VOICE_FIELDS.find(([id]) => id === snapshot.voicePromptId);
+    if (definition) selectVoiceTargetById(snapshot.voicePromptId);
+    else if (input?.dataset.voiceMode) selectVoiceTarget(input, input.dataset.voiceMode, input.dataset.voiceLabel);
+    // wallFixInput was selected by syncWallFixBar when the screen was restored.
+    const cursor = historyCursor;
+    setTimeout(() => { if (historyCursor === cursor) startContextVoice({ resume: true }); }, 0);
+    return;
+  }
+  // Old drafts saved before question snapshots still reopen an erased first-room number.
+  if (currentScreen === "room" && direction < 0 && !Object.hasOwn(snapshot, "voicePromptOpen")) {
     const ids = ["firstLength", "secondLength", "wallThickness"];
     const changed = ids.find((id) => before.form?.[id] !== snapshot.form?.[id]);
     if (changed) {
       selectVoiceTargetById(changed);
       setTimeout(startContextVoice, 0);
     }
-    return;
-  }
-  const rooms = packageData?.rooms ?? [];
-  const undone = before.package?.rooms ?? [];
-  if (rooms.length !== undone.length) return;
-  for (const [roomIndex, room] of rooms.entries()) {
-    const later = undone[roomIndex];
-    if (!later || later.id !== room.id) continue;
-    const moved = room.openings.find((opening) => {
-      const was = later.openings.find((item) => item.id === opening.id);
-      return was && (Math.abs(was.offset_m - opening.offset_m) > 1e-9 || was.wall_id !== opening.wall_id);
-    });
-    const wallIndex = room.walls.findIndex((wall, index) => Math.abs(wall.length_m - (later.walls[index]?.length_m ?? wall.length_m)) > 1e-9);
-    const corner = changedCorner(later, room);
-    if (!moved && wallIndex < 0 && corner < 0) continue;
-    if (currentRoomIndex !== roomIndex || currentScreen !== "openings") {
-      currentRoomIndex = roomIndex;
-      showScreen("openings");
-    }
-    // A corner works out the last walls again and a wall length moves the openings measured from its far corner:
-    // the corner, then the wall, is what was said.
-    if (corner > 0) startAngleFix(corner);
-    else if (wallIndex >= 0) startWallFix(wallIndex);
-    else fixOpeningDistance(moved.id, openingAnchorSide(room, moved));
-    return;
   }
 }
 
@@ -722,6 +743,7 @@ function initializeUi() {
     startContextVoice();
   });
   installPlanGestures();
+  installSurveyZoom();
   installOverviewTaps();
 }
 function syncHeaderTitle() {
@@ -780,6 +802,67 @@ function installOverviewTaps() {
     // The last room there is the new one being measured: a tap on it keeps measuring.
     if (index !== null && index < (packageData?.rooms?.length ?? 0)) openRoomFromOverview(index);
   });
+}
+// Two fingers enlarge a working room; one finger moves it after zooming.
+function installSurveyZoom() {
+  for (const canvas of [elements.roomCanvas, elements.openingCanvas, elements.interiorCanvas, elements.adjacentCanvas]) {
+    let view = { zoom: 1, x: 0, y: 0 };
+    let last = null;
+    let moved = false;
+    let suppressClickUntil = 0;
+    const point = (touches) => {
+      const first = touches[0], second = touches[1];
+      return {
+        mid: second ? [(first.clientX + second.clientX) / 2, (first.clientY + second.clientY) / 2]
+          : [first.clientX, first.clientY],
+        spread: second ? Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY) : 0,
+      };
+    };
+    const apply = () => {
+      canvas.style.transform = "translate(" + view.x + "px, " + view.y + "px) scale(" + view.zoom + ")";
+      canvas.classList.toggle("zoomed", view.zoom > 1.001);
+    };
+    canvas.resetZoom = () => {
+      view = { zoom: 1, x: 0, y: 0 };
+      last = null;
+      apply();
+    };
+    canvas.addEventListener("touchstart", (event) => {
+      if (event.touches.length === 2) {
+        event.preventDefault();
+        moved = true;
+        suppressClickUntil = Date.now() + 500;
+      }
+      last = point(event.touches);
+    }, { passive: false });
+    canvas.addEventListener("touchmove", (event) => {
+      if (!event.touches.length || !last) return;
+      if (event.touches.length < 2 && view.zoom <= 1.001) return;
+      event.preventDefault();
+      const current = point(event.touches);
+      const bounds = canvas.getBoundingClientRect();
+      const centre = [bounds.left + bounds.width / 2 - view.x, bounds.top + bounds.height / 2 - view.y];
+      view = updateZoomView(view, last, current, centre, [canvas.clientWidth, canvas.clientHeight]);
+      if (Math.hypot(current.mid[0] - last.mid[0], current.mid[1] - last.mid[1]) > 2 || event.touches.length === 2) {
+        moved = true;
+      }
+      last = current;
+      apply();
+    }, { passive: false });
+    const end = (event) => {
+      if (moved) suppressClickUntil = Date.now() + 500;
+      last = event.touches.length ? point(event.touches) : null;
+      if (!event.touches.length) moved = false;
+    };
+    canvas.addEventListener("touchend", end);
+    canvas.addEventListener("touchcancel", end);
+    canvas.addEventListener("click", (event) => {
+      if (Date.now() < suppressClickUntil) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, true);
+  }
 }
 function installPlanGestures() {
   const canvas = elements.planCanvas;
@@ -900,11 +983,16 @@ function showScreen(name) {
   if (WORK_SCREENS.includes(name) && name !== "openings") openingStep = null;
   if (WORK_SCREENS.includes(name) && name !== "interior") interiorStep = null;
   if (name !== "openings") balconyStep = null;
-  if (name !== "openings") armedKind = null;
+  if (name !== "openings") {
+    armedKind = null;
+    armedBalconySide = null;
+  }
   if (name !== "interior") cancelAnimationFrame(interiorPulseFrame);
   document.documentElement.dataset.screen = name;
-  // Another object came up: its state as opened is the first record, so that its first change can be undone.
-  if (!historyRestoring && !historyUsable() && packageData?.package_id) recordHistory();
+  // Capture the completed user action after its synchronous screen setup.
+  if (!historyRestoring && packageData?.package_id) queueMicrotask(() => {
+    if (!historyRestoring) recordHistory();
+  });
   else updateHistoryButtons();
   if (name === "start") {
     elements.startScreen.dataset.mode = startMode;
@@ -916,7 +1004,10 @@ function showScreen(name) {
     elements.planCanvas.classList.remove("zoomed");
   }
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
-  if (name !== "openings" && elements.wallFixBar) elements.wallFixBar.hidden = true;
+  if (name !== "openings" && elements.wallFixBar) {
+    wallFix = null;
+    elements.wallFixBar.hidden = true;
+  }
   if (name !== "openings") {
     elements.balconyActions.hidden = true;
     elements.balconySize.hidden = true;
@@ -950,6 +1041,7 @@ function showScreen(name) {
   syncIssuesReturn();
   syncHint();
   refreshVoiceTarget();
+  if (name === "openings" && wallFix) syncWallFixBar();
   resyncCanvasesSoon();
 }
 // An object belongs in "Объекты" from "Начать" on, before anything is measured (Bolat, 05.10.2026): the list is
@@ -978,12 +1070,17 @@ function draftValue() {
     openingStep,
     interiorStep,
     balconyStep,
+    wallFix,
+    voicePromptOpen,
+    voicePromptId,
+    activeRoomWall,
     form: {
       address: elements.address.value,
       roomName: elements.roomName.value,
       firstLength: elements.firstLength.value,
       secondLength: elements.secondLength.value,
       wallThickness: elements.wallThickness.value,
+      wallFixInput: elements.wallFixInput.value,
       openingKind,
       openingWall: elements.openingWall.value,
       openingOffset: elements.openingOffset.value,
@@ -1011,9 +1108,9 @@ async function persist() {
   try { syncIssuesReturn(); } catch { /* the count is a convenience */ }
   try {
     const value = draftValue();
+    if (!historyRestoring) recordHistory(value);
     await saveDraft(value);
     if (keptInCatalog(value.package)) await saveSurvey(value);
-    if (!historyRestoring) recordHistory(value);
     storeHistory();
     setSaveStatus("");
   } catch {
@@ -1021,6 +1118,7 @@ async function persist() {
   }
 }
 function schedulePersist() {
+  if (!historyRestoring && packageData?.package_id) recordHistory();
   setSaveStatus("Сохраняем…");
   clearTimeout(saveTimer);
   saveTimer = setTimeout(persist, 180);
@@ -1030,6 +1128,7 @@ function restoreOpeningStep(value) {
   if (value.step === "kind") return Number.isInteger(value.wallIndex) && value.wallIndex >= 0 ? { step: "kind", wallIndex: value.wallIndex } : null;
   if (!["side", "width", "thickness"].includes(value.step) || typeof value.id !== "string") return null;
   const step = { step: value.step, id: value.id, editing: value.editing === true, balcony: value.balcony === true };
+  if (value.balconyDoorSide === "left" || value.balconyDoorSide === "right") step.balconyDoorSide = value.balconyDoorSide;
   if (value.reanchor === true) step.reanchor = true;
   if (value.distanceOnly === true) step.distanceOnly = true;
   if (value.step !== "thickness") step.side = ["start", "end"].includes(value.side) ? value.side : null;
@@ -1092,9 +1191,14 @@ function restoreForm(draft) {
   openingStep = restoreOpeningStep(draft?.openingStep);
   interiorStep = restoreInteriorStep(draft?.interiorStep);
   balconyStep = typeof draft?.balconyStep?.openingId === "string"
-    ? { openingId: draft.balconyStep.openingId, asking: draft.balconyStep.asking === true } : null;
-  activeRoomWall = entrance.step === "thickness" ? null
-    : entrance.step === "anchor" ? null : entrance.wall;
+    ? { openingId: draft.balconyStep.openingId, asking: draft.balconyStep.asking === true,
+        doorSide: draft.balconyStep.doorSide === "right" ? "right" : "left" } : null;
+  wallFix = draft?.wallFix ?? null;
+  elements.wallFixInput.value = form.wallFixInput ?? "";
+  voicePromptOpen = Boolean(draft?.voicePromptOpen);
+  voicePromptId = typeof draft?.voicePromptId === "string" ? draft.voicePromptId : null;
+  activeRoomWall = Object.hasOwn(draft ?? {}, "activeRoomWall") ? draft.activeRoomWall
+    : entrance.step === "thickness" || entrance.step === "anchor" ? null : entrance.wall;
   elements.startButton.disabled = !elements.address.value.trim();
   setKind(openingKind, false, false);
   setInteriorKind(interiorKind, false);
@@ -1212,6 +1316,8 @@ function drawOpeningSymbol(context, segment, opening, fieldColor) {
     context.beginPath();
     context.moveTo(x1 - nx * 6, y1 - ny * 6); context.lineTo(x2 - nx * 6, y2 - ny * 6);
     context.moveTo(x1 + nx * 6, y1 + ny * 6); context.lineTo(x2 + nx * 6, y2 + ny * 6);
+    context.moveTo(x1 - nx * 9, y1 - ny * 9); context.lineTo(x1 + nx * 9, y1 + ny * 9);
+    context.moveTo(x2 - nx * 9, y2 - ny * 9); context.lineTo(x2 + nx * 9, y2 + ny * 9);
     context.stroke();
     return;
   }
@@ -1219,7 +1325,60 @@ function drawOpeningSymbol(context, segment, opening, fieldColor) {
   context.beginPath();
   context.moveTo(x1 - nx * jamb, y1 - ny * jamb); context.lineTo(x1 + nx * jamb, y1 + ny * jamb);
   context.moveTo(x2 - nx * jamb, y2 - ny * jamb); context.lineTo(x2 + nx * jamb, y2 + ny * jamb);
+  if (opening.kind === "door") {
+    context.moveTo(x1, y1);
+    context.lineTo(x2, y2);
+    const middleX = (x1 + x2) / 2;
+    const middleY = (y1 + y2) / 2;
+    context.moveTo(middleX - nx * jamb, middleY - ny * jamb);
+    context.lineTo(middleX + nx * jamb, middleY + ny * jamb);
+  }
   context.stroke();
+}
+
+function drawBalconyGlazingSymbol(context, segment, fieldColor, px = 1) {
+  const [x1, y1, x2, y2] = segment;
+  const span = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const nx = -(y2 - y1) / span;
+  const ny = (x2 - x1) / span;
+  context.save();
+  context.strokeStyle = fieldColor;
+  context.lineWidth = 10 * px;
+  context.beginPath();
+  context.moveTo(x1, y1);
+  context.lineTo(x2, y2);
+  context.stroke();
+  context.strokeStyle = uiColor("--button", "#285778");
+  context.lineWidth = 1.3 * px;
+  context.beginPath();
+  for (const shift of [-2.5, 0, 2.5]) {
+    context.moveTo(x1 + nx * shift * px, y1 + ny * shift * px);
+    context.lineTo(x2 + nx * shift * px, y2 + ny * shift * px);
+  }
+  context.moveTo(x1 - nx * 5 * px, y1 - ny * 5 * px);
+  context.lineTo(x1 + nx * 5 * px, y1 + ny * 5 * px);
+  context.moveTo(x2 - nx * 5 * px, y2 - ny * 5 * px);
+  context.lineTo(x2 + nx * 5 * px, y2 + ny * 5 * px);
+  context.stroke();
+  context.restore();
+}
+
+function drawRoomBalconyGlazing(canvas, room, toCanvas) {
+  const context = canvas.getContext("2d");
+  const points = roomPoints(room);
+  for (const balcony of room.balconies ?? []) {
+    const wing = balconySymbolWing(room, balcony);
+    if (!wing) continue;
+    const wallIndex = room.walls.findIndex((wall) => wall.id === wing.wall_id);
+    const a = points[wallIndex];
+    const b = points[wallIndex + 1];
+    const fraction = wing.offset_m / room.walls[wallIndex].length_m;
+    const reach = wing.width_m / room.walls[wallIndex].length_m;
+    const start = [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction];
+    const end = [a[0] + (b[0] - a[0]) * (fraction + reach), a[1] + (b[1] - a[1]) * (fraction + reach)];
+    const first = toCanvas(start), last = toCanvas(end);
+    drawBalconyGlazingSymbol(context, [...first, ...last], uiColor("--field", "#ffffff"));
+  }
 }
 
 // The balconies of a room (Bolat, 08.10.2026), each with the wall of its door and its corners on the plan.
@@ -1540,6 +1699,7 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
     if (wallIndex < 0) continue;
     drawOpeningSymbol(context, canvasWallSegment(canvas, room, wallIndex, opening), opening, field);
   }
+  drawRoomBalconyGlazing(canvas, room, (point) => roomPointToCanvas(room, box, point));
 
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -1652,6 +1812,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
     if (wallIndex < 0) continue;
     drawOpeningSymbol(context, openingSegment(box, wallIndex, opening), opening, field);
   }
+  drawRoomBalconyGlazing(canvas, room, (point) => roomPointToCanvas(room, box, point));
 
   context.fillStyle = text;
   context.font = "700 24px system-ui";
@@ -1865,11 +2026,57 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
         context.lineTo(x2, y2);
       }
       context.stroke();
+      const balcony = balconyForOpening(room, opening.id);
+      const wing = balcony ? balconySymbolWing(room, balcony) : null;
+      if (wing) {
+        const first = at(wing.offset_m, thickness / 2);
+        const last = at(wing.offset_m + wing.width_m, thickness / 2);
+        drawBalconyGlazingSymbol(context, [...first, ...last], surface, px);
+      }
     }
   });
   balconies.flat().forEach(({ points: corners }) => {
     drawBalconySymbol(context, corners.map(transform), { px });
   });
+  // The final mobile plan carries the same wall lengths, room numbers and floor areas as the desktop drawing.
+  // The small navigation plans stay bare so they can still be tapped accurately.
+  if (canvas === elements.planCanvas) {
+    context.save();
+    context.fillStyle = uiColor("--text", "#1a1a1a");
+    context.strokeStyle = surface;
+    context.lineWidth = 4 * px;
+    context.lineJoin = "round";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    shown.rooms.forEach((room, roomIndex) => {
+      const annotations = planRoomAnnotations(room);
+      for (const wall of annotations.walls) {
+        const start = transform(wall.start);
+        const end = transform(wall.end);
+        const point = transform(wall.point);
+        let angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+        if (angle > Math.PI / 2) angle -= Math.PI;
+        if (angle < -Math.PI / 2) angle += Math.PI;
+        context.save();
+        context.translate(point[0], point[1]);
+        context.rotate(angle);
+        context.font = "700 " + Math.round(13 * px) + "px system-ui, sans-serif";
+        const label = formatLength(wall.length_m);
+        context.strokeText(label, 0, 0);
+        context.fillText(label, 0, 0);
+        context.restore();
+      }
+      const [x, y] = transform(annotations.point);
+      context.font = "700 " + Math.round(14 * px) + "px system-ui, sans-serif";
+      context.strokeText(String(roomIndex + 1), x, y - 12 * px);
+      context.fillText(String(roomIndex + 1), x, y - 12 * px);
+      context.font = "600 " + Math.round(12 * px) + "px system-ui, sans-serif";
+      const area = annotations.area_m2.toFixed(1).replace(".", ",");
+      context.strokeText(area, x, y + 9 * px);
+      context.fillText(area, x, y + 9 * px);
+    });
+    context.restore();
+  }
   // Places the app does not understand: a red numbered mark, the same number as in the list under the plan.
   // One fixed red with white digits reads in both themes.
   // The canvas is in device pixels: the mark is sized in screen points so it reads on a phone.
@@ -2032,7 +2239,7 @@ function setKind(kind, resetWidth = true, persistChange = true) {
   openingKind = kind;
   for (const button of kindButtons) button.classList.toggle("active", button.dataset.kind === kind);
   if (resetWidth) {
-    const fallback = kind === "door" ? 0.8 : kind === "window" ? 1.3 : 0.9;
+    const fallback = OPENING_DEFAULT_WIDTH[kind];
     elements.openingWidth.value = fallback.toFixed(2).replace(".", ",");
   }
   if (openingPlacementActive) centerOpeningOffset();
@@ -2515,7 +2722,22 @@ function knownWindowThickness(exceptId) {
 function openingWallIndex(room, opening) {
   return room.walls.findIndex((wall) => wall.id === opening.wall_id);
 }
-async function chooseOpeningKind(kind) {
+function chooseBalconySide(action) {
+  balconySideAction = action;
+  elements.balconySideDialog.showModal();
+}
+for (const button of document.querySelectorAll("[data-balcony-side]")) {
+  button.addEventListener("click", () => {
+    const action = balconySideAction;
+    balconySideAction = null;
+    elements.balconySideDialog.close();
+    action?.(button.dataset.balconySide);
+  });
+}
+elements.balconySideCancel.addEventListener("click", () => elements.balconySideDialog.close());
+elements.balconySideDialog.addEventListener("close", () => { balconySideAction = null; });
+
+async function chooseOpeningKind(kind, balconyDoorSide = "left") {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
   try {
@@ -2533,7 +2755,8 @@ async function chooseOpeningKind(kind) {
         kind: kind === "balcony" ? "door" : kind,
         wallIndex: openingStep.wallIndex, offsetM: String(offset), widthM: String(width),
       });
-      openingStep = { step: "side", id: packageData.rooms[currentRoomIndex].openings.at(-1).id, side: null, balcony: kind === "balcony" };
+      openingStep = { step: "side", id: packageData.rooms[currentRoomIndex].openings.at(-1).id, side: null,
+        balcony: kind === "balcony", balconyDoorSide: kind === "balcony" ? balconyDoorSide : null };
     } else {
       const opening = stepOpening();
       if (!opening) return;
@@ -2547,7 +2770,13 @@ async function chooseOpeningKind(kind) {
         kind: kind === "balcony" ? "door" : kind,
         wallIndex, offsetM: String(Math.round(offset * 1000) / 1000), widthM: String(width),
       });
-      openingStep = { ...openingStep, balcony: kind === "balcony" };
+      const existingBalcony = balconyForOpening(packageData.rooms[currentRoomIndex], opening.id);
+      if (kind === "balcony" && existingBalcony) {
+        packageData = updateBalconyInPackage(packageData, currentRoomIndex, existingBalcony.id,
+          { doorSide: balconyDoorSide });
+      }
+      openingStep = { ...openingStep, balcony: kind === "balcony",
+        balconyDoorSide: kind === "balcony" ? balconyDoorSide : null };
       if (openingStep.step === "thickness" && (kind === "window" || kind === "balcony")) {
         finishOpeningPlacement(opening.id);
         return;
@@ -2589,25 +2818,27 @@ function finishOpeningPlacement(id) {
   const room = packageData.rooms[currentRoomIndex];
   const opening = room.openings.find((item) => item.id === id);
   const balcony = Boolean(openingStep?.balcony || balconyForOpening(room, id));
+  const balconyDoorSide = openingStep?.balconyDoorSide ?? balconyForOpening(room, id)?.door_side ?? "left";
   const windowThickness = knownWindowThickness(id);
   if ((opening.kind === "window" || balcony) && !(opening.wall_thickness_m > 0) && windowThickness) {
     packageData = setOpeningWallThickness(packageData, currentRoomIndex, id, String(windowThickness));
   }
   const placed = packageData.rooms[currentRoomIndex].openings.find((item) => item.id === id);
   const editing = Boolean(openingStep?.editing);
-  openingStep = placed.wall_thickness_m > 0 ? null : { step: "thickness", id, editing, balcony };
+  openingStep = placed.wall_thickness_m > 0 ? null : { step: "thickness", id, editing, balcony, balconyDoorSide };
   renderOpenings();
   persist();
   // Correcting a placed door only moves it; walking through is a tap on the door. A balcony door still without its
   // balcony asks the size even after a correction.
   const owesBalcony = balcony && !balconyForOpening(packageData.rooms[currentRoomIndex], id);
-  if (!openingStep && placed.kind !== "window" && (!editing || owesBalcony)) afterOpeningThickness(id, true, balcony);
+  if (!openingStep && placed.kind !== "window" && (!editing || owesBalcony)) afterOpeningThickness(id, true, balcony, balconyDoorSide);
 }
 // With thickness known, an ordinary door opens its next room; a balcony door asks for its size here.
-function afterOpeningThickness(id, placedNow = false, balconyPlaced = false) {
+function afterOpeningThickness(id, placedNow = false, balconyPlaced = false, chosenSide = null) {
   if (!placedNow && (openingStep?.step !== "thickness" || openingStep.id !== id)) return;
   const editing = Boolean(openingStep?.editing);
   const balcony = balconyPlaced || Boolean(openingStep?.balcony);
+  const doorSide = chosenSide ?? openingStep?.balconyDoorSide ?? "left";
   openingStep = null;
   const opening = packageData?.rooms?.[currentRoomIndex]?.openings?.find((item) => item.id === id);
   const owesBalcony = balcony && opening && !balconyForOpening(packageData.rooms[currentRoomIndex], id);
@@ -2616,7 +2847,7 @@ function afterOpeningThickness(id, placedNow = false, balconyPlaced = false) {
     return;
   }
   if (balcony) {
-    balconyStep = { openingId: id, asking: true };
+    balconyStep = { openingId: id, asking: true, doorSide };
     askBalconySize(false);
     persist();
     return;
@@ -2679,9 +2910,11 @@ function openAdjacent(roomIndex, openingId) {
 // ("метр на два", the smaller number is how far it stands out); it stands in the middle of the door and is moved by a tap
 // outside along the wall, where it stops against a wall that stands out.
 function selectBalcony(openingId) {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room) return;
   clearOpeningEdit(false);
   openingStep = null;
-  balconyStep = { openingId, asking: false };
+  balconyStep = { openingId, asking: false, doorSide: balconyForOpening(room, openingId)?.door_side ?? "left" };
   if (currentScreen === "openings") renderOpenings();
   else showScreen("openings");
   schedulePersist();
@@ -2731,10 +2964,16 @@ function balconyTapAlong(canvas, room, x, y) {
 function renderOpenings() {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
+  if (elements.openingCanvas.zoomRoomId !== room.id) {
+    elements.openingCanvas.resetZoom?.();
+    elements.openingCanvas.zoomRoomId = room.id;
+  }
   const editingOpening = room.openings.find((item) => item.id === editingOpeningId);
   if (editingOpeningId && !editingOpening) clearOpeningEdit(false);
   if (elements.openingEditPanel) elements.openingEditPanel.hidden = !editingOpening;
   elements.openingsRoomName.textContent = room.name;
+  const roomNoteCount = (packageData.voice_notes ?? []).filter((note) => note.room_id === room.id).length;
+  elements.roomNoteButton.textContent = roomNoteCount ? "🎙 Примечания · " + roomNoteCount : "🎙 Примечание";
   syncWallOptions(elements.openingWall, room);
   const wallIndex = Math.min(Math.max(Number(elements.openingWall.value) || 0, 0), room.walls.length - 1);
   elements.openingWall.value = String(wallIndex);
@@ -2770,6 +3009,7 @@ function renderOpenings() {
     door_offset_m: (2 - previewOpening.width_m) / 2,
     width_m: 2,
     depth_m: 1,
+    door_side: balconyStep?.doorSide ?? "left",
   } : null;
   cancelAnimationFrame(openingPulseFrame);
   const draw = () => {
@@ -3656,6 +3896,223 @@ function issueRows(issues) {
   for (const issue of issues) if (!baseline.some((item) => item.key === issue.key)) rows.push(issue);
   return rows;
 }
+let roomNoteRoomId = null;
+let roomNoteCapture = null;
+let roomNoteStarting = false;
+let roomNoteRenderToken = 0;
+let roomNoteUrls = [];
+
+function noteRoom() {
+  return packageData?.rooms?.find((room) => room.id === roomNoteRoomId) ?? null;
+}
+
+function updateRoomNoteControls() {
+  const recording = Boolean(roomNoteCapture);
+  elements.roomNoteRecord.textContent = recording ? "■ Остановить и сохранить"
+    : roomNoteStarting ? "Подключаем микрофон…" : "🎙 Записать примечание";
+  elements.roomNoteRecord.disabled = roomNoteStarting;
+  elements.roomNoteCancel.hidden = !recording;
+}
+
+async function renderRoomNoteDialog() {
+  const token = ++roomNoteRenderToken;
+  for (const url of roomNoteUrls) URL.revokeObjectURL(url);
+  roomNoteUrls = [];
+  elements.roomNoteList.replaceChildren();
+  const room = noteRoom();
+  if (!room) return;
+  elements.roomNoteTitle.textContent = "Примечания · " + room.name;
+  const notes = (packageData.voice_notes ?? []).filter((note) => note.room_id === room.id);
+  for (const [index, note] of notes.entries()) {
+    const blob = await loadVoiceNote(packageData.package_id, note.id);
+    if (token !== roomNoteRenderToken) return;
+    const row = document.createElement("div");
+    row.className = "room-note-row";
+    const label = document.createElement("strong");
+    label.textContent = "Запись " + (index + 1) + " · " + Math.max(1, Math.round(note.duration_ms / 1000)) + " с";
+    row.append(label);
+    if (blob) {
+      const url = URL.createObjectURL(blob);
+      roomNoteUrls.push(url);
+      const player = document.createElement("audio");
+      player.controls = true;
+      player.preload = "none";
+      player.src = url;
+      row.append(player);
+    } else {
+      const missing = document.createElement("span");
+      missing.textContent = "Файл записи не найден на телефоне";
+      row.append(missing);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "quiet compact";
+    remove.textContent = "Удалить запись";
+    remove.addEventListener("click", async () => {
+      packageData = { ...packageData, voice_notes: (packageData.voice_notes ?? []).filter((item) => item.id !== note.id) };
+      historyActionId += 1;
+      await persist();
+      renderOpenings();
+      renderRoomNoteDialog().catch(showError);
+    });
+    row.append(remove);
+    elements.roomNoteList.append(row);
+  }
+  if (!notes.length) elements.roomNoteStatus.textContent = "В этой комнате примечаний пока нет.";
+}
+
+function openRoomNoteDialog() {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room) return;
+  if (voiceListening) stopContextVoice();
+  roomNoteRoomId = room.id;
+  elements.roomNoteStatus.textContent = "";
+  updateRoomNoteControls();
+  elements.roomNoteDialog.showModal();
+  renderRoomNoteDialog().catch(showError);
+}
+
+function stopRoomNote(cancel = false) {
+  const capture = roomNoteCapture;
+  if (!capture) return;
+  capture.cancelled = cancel;
+  if (capture.recorder.state !== "inactive") capture.recorder.stop();
+  clearTimeout(capture.timer);
+  elements.roomNoteRecord.disabled = true;
+  elements.roomNoteStatus.textContent = cancel ? "Запись отменена." : "Сохраняем запись…";
+}
+
+async function beginRoomNote() {
+  const room = noteRoom();
+  if (!room || roomNoteCapture || roomNoteStarting) return;
+  const notes = packageData.voice_notes ?? [];
+  if (notes.length >= MAX_VOICE_NOTES ||
+      notes.reduce((sum, note) => sum + note.bytes, 0) >= MAX_VOICE_NOTES_TOTAL_BYTES) {
+    showError(new Error("В объекте уже максимальное число или объём голосовых примечаний."));
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    showError(new Error("Этот браузер не поддерживает запись голоса. Откройте приложение в современном браузере."));
+    return;
+  }
+  let stream;
+  roomNoteStarting = true;
+  updateRoomNoteControls();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (!elements.roomNoteDialog.open || !noteRoom() || room.id !== roomNoteRoomId) {
+      stream.getTracks().forEach((track) => track.stop());
+      roomNoteStarting = false;
+      updateRoomNoteControls();
+      return;
+    }
+    const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"]
+      .find((value) => MediaRecorder.isTypeSupported?.(value));
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24000 }
+      : { audioBitsPerSecond: 24000 });
+    const capture = {
+      recorder, stream, chunks: [], started: Date.now(), roomId: room.id,
+      packageId: packageData.package_id, cancelled: false, timer: null,
+    };
+    roomNoteCapture = capture;
+    roomNoteStarting = false;
+    recorder.ondataavailable = (event) => { if (event.data?.size) capture.chunks.push(event.data); };
+    recorder.onerror = () => {
+      capture.cancelled = true;
+      stopRoomNote(true);
+      showError(new Error("Не удалось записать голос. Повторите запись."));
+    };
+    recorder.onstop = async () => {
+      clearTimeout(capture.timer);
+      stream.getTracks().forEach((track) => track.stop());
+      if (roomNoteCapture === capture) roomNoteCapture = null;
+      elements.roomNoteRecord.disabled = false;
+      updateRoomNoteControls();
+      if (capture.cancelled) return;
+      const type = (recorder.mimeType || capture.chunks[0]?.type || "").split(";")[0];
+      const blob = new Blob(capture.chunks, { type });
+      const duration = Math.min(MAX_VOICE_NOTE_MS, Math.max(1, Date.now() - capture.started));
+      const current = packageData?.voice_notes ?? [];
+      const size = current.reduce((sum, note) => sum + note.bytes, 0);
+      if (!VOICE_NOTE_MIMES.includes(type) || !blob.size || blob.size > MAX_VOICE_NOTE_BYTES ||
+          current.length >= MAX_VOICE_NOTES || size + blob.size > MAX_VOICE_NOTES_TOTAL_BYTES) {
+        showError(new Error("Запись слишком большая или формат не поддерживается. Повторите короче."));
+        elements.roomNoteStatus.textContent = "Запись не сохранена.";
+        return;
+      }
+      const note = { id: crypto.randomUUID(), room_id: capture.roomId, mime_type: type,
+        bytes: blob.size, duration_ms: duration, created_at: new Date().toISOString() };
+      try {
+        await saveVoiceNote(capture.packageId, note.id, blob);
+        if (packageData?.package_id !== capture.packageId ||
+            !packageData.rooms.some((item) => item.id === capture.roomId)) return;
+        packageData = { ...packageData, voice_notes: [...current, note] };
+        historyActionId += 1;
+        await persist();
+        if (currentScreen === "openings") renderOpenings();
+        if (currentScreen === "done") renderSummary();
+        elements.roomNoteStatus.textContent = "Запись сохранена на телефоне и войдёт в файл замера.";
+        if (elements.roomNoteDialog.open) await renderRoomNoteDialog();
+      } catch (error) {
+        showError(error);
+        elements.roomNoteStatus.textContent = "Не удалось сохранить запись.";
+      }
+    };
+    recorder.start(1000);
+    capture.timer = setTimeout(() => stopRoomNote(), MAX_VOICE_NOTE_MS - 1000);
+    elements.roomNoteStatus.textContent = "Идёт запись. Назовите стену и пояснение; до 60 секунд.";
+    updateRoomNoteControls();
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    roomNoteStarting = false;
+    updateRoomNoteControls();
+    showError(new Error("Не удалось включить микрофон для примечания: " + (error?.message ?? error)));
+  }
+}
+
+function renderSummaryNotes() {
+  const notes = packageData?.voice_notes ?? [];
+  elements.summaryNotesText.textContent = notes.length
+    ? "Записей: " + notes.length + ". Проверьте комнаты перед передачей."
+    : "Записей нет. Если нужно пояснить вентканал или другое место, откройте комнату.";
+  elements.summaryNotesRooms.replaceChildren();
+  packageData.rooms.forEach((room, index) => {
+    const count = notes.filter((note) => note.room_id === room.id).length;
+    const row = document.createElement("div");
+    row.className = "summary-note-room";
+    const label = document.createElement("span");
+    label.textContent = (index + 1) + ". " + room.name + " · " + (count ? "записей: " + count : "без примечаний");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quiet compact";
+    button.textContent = count ? "Прослушать / добавить" : "Добавить";
+    button.addEventListener("click", () => {
+      openRoomFromOverview(index);
+      openRoomNoteDialog();
+    });
+    row.append(label, button);
+    elements.summaryNotesRooms.append(row);
+  });
+}
+
+elements.roomNoteButton.addEventListener("click", openRoomNoteDialog);
+elements.roomNoteRecord.addEventListener("click", () => {
+  if (roomNoteCapture) stopRoomNote();
+  else beginRoomNote();
+});
+elements.roomNoteCancel.addEventListener("click", () => stopRoomNote(true));
+elements.roomNoteClose.addEventListener("click", () => elements.roomNoteDialog.close());
+elements.roomNoteDialog.addEventListener("close", () => {
+  if (roomNoteCapture) stopRoomNote();
+  roomNoteRoomId = null;
+  ++roomNoteRenderToken;
+  for (const url of roomNoteUrls) URL.revokeObjectURL(url);
+  roomNoteUrls = [];
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && roomNoteCapture) stopRoomNote();
+});
+
 function renderSummary() {
   if (!packageData?.rooms?.length) return;
   elements.summaryAddress.textContent = packageData.address;
@@ -3719,6 +4176,7 @@ function renderSummary() {
       type: "height", value: packageData.ceiling_height_m, label: `${formatLength(packageData.ceiling_height_m)} м`,
     }));
   }
+  renderSummaryNotes();
   elements.shareButton.disabled = issues.length > 0;
   if (finished && celebratedRevision !== packageData.updated_at) {
     celebratedRevision = packageData.updated_at;
@@ -3732,33 +4190,50 @@ function hideWallFix() {
   wallFix = null;
   elements.wallFixBar.hidden = true;
 }
+function syncWallFixBar() {
+  const fix = wallFix;
+  const room = packageData?.rooms?.[fix?.roomIndex];
+  if (!fix || !room || fix.roomIndex !== currentRoomIndex) {
+    elements.wallFixBar.hidden = true;
+    return;
+  }
+  let mode, label, question;
+  if (fix.type === "angle") {
+    question = "Угол " + cornerName(fix.corner) + ", градусов:";
+    label = "угол " + cornerName(fix.corner) + " в градусах";
+    mode = "angle";
+    elements.wallFixInput.value = String(Math.round(fix.value * 10) / 10).replace(".", ",");
+  } else {
+    const side = cornerName(fix.wallIndex) + "–" + cornerName((fix.wallIndex + 1) % room.walls.length);
+    question = fix.type === "wallThickness" ? "Стена " + side + ", толщина (см или м):"
+      : "Стена " + side + ", новая длина, м:";
+    label = fix.type === "wallThickness" ? "толщину стены " + side : "новую длину стены " + side;
+    mode = fix.type === "wallThickness" ? "thickness" : "measurement";
+    elements.wallFixInput.value = formatLength(fix.value);
+  }
+  elements.wallFixLabel.textContent = question;
+  elements.wallFixBar.hidden = false;
+  selectVoiceTarget(elements.wallFixInput, mode, label);
+}
+function askWallFix() {
+  syncWallFixBar();
+  recordHistory();
+  if (voiceController.capability().available) startContextVoice();
+  else elements.wallFixInput.focus();
+}
 function startWallThicknessFix(wallIndex) {
   const room = packageData.rooms[currentRoomIndex];
   hideWallFix();
   openingStep = null;
   wallFix = { type: "wallThickness", roomIndex: currentRoomIndex, wallIndex,
     value: wallThickness(room, room.walls[wallIndex]) };
-  elements.wallFixLabel.textContent = "Стена " + cornerName(wallIndex) + "–" +
-    cornerName((wallIndex + 1) % room.walls.length) + ", толщина (см или м):";
-  elements.wallFixInput.value = formatLength(wallFix.value);
-  elements.wallFixBar.hidden = false;
-  selectVoiceTarget(elements.wallFixInput, "thickness",
-    "толщину стены " + cornerName(wallIndex) + "–" + cornerName((wallIndex + 1) % room.walls.length));
-  if (voiceController.capability().available) startContextVoice();
-  else elements.wallFixInput.focus();
+  askWallFix();
 }
 function startWallFix(wallIndex) {
   const room = packageData.rooms[currentRoomIndex];
   wallFix = { type: "wall", roomIndex: currentRoomIndex, wallIndex, value: room.walls[wallIndex].length_m };
-  elements.wallFixLabel.textContent = `Стена ${cornerName(wallIndex)}–${cornerName((wallIndex + 1) % room.walls.length)}, новая длина, м:`;
-  elements.wallFixInput.value = formatLength(wallFix.value);
-  elements.wallFixBar.hidden = false;
-  selectVoiceTarget(elements.wallFixInput, "measurement",
-    `новую длину стены ${cornerName(wallIndex)}–${cornerName((wallIndex + 1) % room.walls.length)}`);
-  if (voiceController.capability().available) startContextVoice();
-  else elements.wallFixInput.focus();
+  askWallFix();
 }
-// A corner of a free-form room tapped by its letter is said again in degrees; corner A follows from the others.
 function startAngleFix(corner) {
   const room = packageData.rooms[currentRoomIndex];
   if (corner === 0) {
@@ -3767,12 +4242,7 @@ function startAngleFix(corner) {
     return;
   }
   wallFix = { type: "angle", roomIndex: currentRoomIndex, corner, value: roomInteriorAngles(room)[corner] };
-  elements.wallFixLabel.textContent = `Угол ${cornerName(corner)}, градусов:`;
-  elements.wallFixInput.value = String(Math.round(wallFix.value * 10) / 10).replace(".", ",");
-  elements.wallFixBar.hidden = false;
-  selectVoiceTarget(elements.wallFixInput, "angle", `угол ${cornerName(corner)} в градусах`);
-  if (voiceController.capability().available) startContextVoice();
-  else elements.wallFixInput.focus();
+  askWallFix();
 }
 elements.removeRoomButton.addEventListener("click", async () => {
   const room = packageData?.rooms?.[currentRoomIndex];
@@ -3787,6 +4257,8 @@ elements.removeRoomButton.addEventListener("click", async () => {
   try {
     const parentId = packageData.connections.find((item) => item.room_b_id === room.id)?.room_a_id;
     packageData = removeRoomFromPackage(packageData, currentRoomIndex);
+    const keptRoomIds = new Set(packageData.rooms.map((item) => item.id));
+    packageData.voice_notes = (packageData.voice_notes ?? []).filter((note) => keptRoomIds.has(note.room_id));
     currentRoomIndex = Math.max(0, packageData.rooms.findIndex((item) => item.id === parentId));
     clearOpeningEdit();
     showScreen("openings");
@@ -3895,7 +4367,8 @@ async function renderSurveyCatalog() {
     const details = document.createElement("span");
     details.textContent = recordDate(record) + (record.package.rooms.length
       ? " · комнат: " + record.package.rooms.length : " · замер не начат") +
-      (hasRemarks(record) ? " · есть замечания" : "");
+      (hasRemarks(record) ? " · есть замечания" : "") +
+      (record.package.voice_notes?.length ? " · голосовых примечаний: " + record.package.voice_notes.length : "");
     text.append(title, details);
 
     const actions = document.createElement("div");
@@ -3913,6 +4386,7 @@ async function renderSurveyCatalog() {
       if (!confirm(`Удалить сохранённый замер «${record.package.address}» с этого телефона?`)) return;
       try {
         await deleteSurvey(record.package.package_id);
+        await deleteVoiceNotesForPackage(record.package.package_id);
         if (packageData?.package_id === record.package.package_id) {
           await clearDraft();
           packageData = null;
@@ -3966,8 +4440,20 @@ async function deliverFile(blob, name, title, text, successMessage) {
 async function shareTodaySurveys() {
   try {
     clearError();
-    const entries = archiveEntriesForDay(await listSurveys());
+    const records = await listSurveys();
+    const entries = archiveEntriesForDay(records);
     if (!entries.length) throw new Error("За сегодня нет сохранённых замеров.");
+    const today = surveysForLocalDay(records);
+    for (const [index, record] of today.entries()) {
+      const pkg = withExplicitWallThickness(inferPartitionThickness(record.package));
+      entries[index].data = JSON.stringify(await packageWithVoiceNotes(pkg, loadVoiceNote), null, 2);
+      if (new TextEncoder().encode(entries[index].data).length > 4 * 1024 * 1024) {
+        throw new Error("Один замер больше 4 МБ. Уменьшите число голосовых примечаний.");
+      }
+    }
+    if (entries.reduce((sum, entry) => sum + new TextEncoder().encode(entry.data).length, 0) > 32 * 1024 * 1024) {
+      throw new Error("Архив больше 32 МБ. Передайте замеры по одному.");
+    }
     const blob = new Blob([createStoredZip(entries)], { type: "application/zip" });
     await deliverFile(
       blob,
@@ -3984,7 +4470,11 @@ async function sharePackage() {
   try {
     clearError();
     validatePackage(packageData);
-    const json = JSON.stringify(withExplicitWallThickness(inferPartitionThickness(packageData)), null, 2);
+    const pkg = withExplicitWallThickness(inferPartitionThickness(packageData));
+    const json = JSON.stringify(await packageWithVoiceNotes(pkg, loadVoiceNote), null, 2);
+    if (new TextEncoder().encode(json).length > 4 * 1024 * 1024) {
+      throw new Error("Замер больше 4 МБ. Уменьшите число голосовых примечаний.");
+    }
     const blob = new Blob([json], { type: "application/json" });
     await deliverFile(
       blob,
@@ -4183,22 +4673,28 @@ for (const input of [
   });
 }
 for (const button of kindButtons) button.addEventListener("click", () => {
-  if (openingStep) {
-    chooseOpeningKind(button.dataset.kind);
-    return;
-  }
-  if (!editingOpeningId) {
-    // Nothing is being placed: the button is taken like a pencil, the next tap on a wall puts it there.
-    armedKind = armedKind === button.dataset.kind ? null : button.dataset.kind;
-    for (const item of kindButtons) item.classList.toggle("active", item.dataset.kind === armedKind);
-    if (armedKind) {
-      const what = { door: "дверь", window: "окно", passage: "проём", balcony: "дверь балкона" }[armedKind];
-      showNotice(`Теперь коснитесь стены, где ${what}.`);
+  const kind = button.dataset.kind;
+  const apply = (doorSide = null) => {
+    if (openingStep) {
+      chooseOpeningKind(kind, doorSide ?? "left");
+      return;
     }
-    return;
-  }
-  openingPlacementActive = true;
-  setKind(button.dataset.kind === "balcony" ? "door" : button.dataset.kind);
+    if (!editingOpeningId) {
+      // Nothing is being placed: the button is taken like a pencil, the next tap on a wall puts it there.
+      armedKind = kind === "balcony" ? kind : armedKind === kind ? null : kind;
+      armedBalconySide = armedKind === "balcony" ? doorSide : null;
+      for (const item of kindButtons) item.classList.toggle("active", item.dataset.kind === armedKind);
+      if (armedKind) {
+        const what = { door: "дверь", window: "окно", passage: "проём", balcony: "дверь балкона" }[armedKind];
+        showNotice("Теперь коснитесь стены, где " + what + ".");
+      }
+      return;
+    }
+    openingPlacementActive = true;
+    setKind(kind === "balcony" ? "door" : kind);
+  };
+  if (kind === "balcony") chooseBalconySide(apply);
+  else apply();
 });
 for (const button of interiorKindButtons) button.addEventListener("click", () => {
   if (!interiorStep) {
@@ -4527,13 +5023,15 @@ elements.finishButton.addEventListener("click", async () => {
 elements.adjacentBalconyButton.addEventListener("click", () => {
   const target = pendingAdjacent;
   if (!target) return;
-  if (voiceListening) stopContextVoice();
-  pendingAdjacent = null;
-  pendingShape = null;
-  currentRoomIndex = target.roomIndex;
-  balconyStep = { openingId: target.openingId, asking: true };
-  showScreen("openings");
-  persist();
+  chooseBalconySide((doorSide) => {
+    if (voiceListening) stopContextVoice();
+    pendingAdjacent = null;
+    pendingShape = null;
+    currentRoomIndex = target.roomIndex;
+    balconyStep = { openingId: target.openingId, asking: true, doorSide };
+    showScreen("openings");
+    persist();
+  });
 });
 elements.balconySize.addEventListener("change", async () => {
   const raw = elements.balconySize.value.trim();
@@ -4543,7 +5041,8 @@ elements.balconySize.addEventListener("change", async () => {
     const balcony = balconyForOpening(packageData.rooms[currentRoomIndex], balconyStep.openingId);
     packageData = balcony
       ? updateBalconyInPackage(packageData, currentRoomIndex, balcony.id, { firstM, secondM })
-      : addBalconyToPackage(packageData, currentRoomIndex, balconyStep.openingId, { firstM, secondM });
+      : addBalconyToPackage(packageData, currentRoomIndex, balconyStep.openingId,
+        { firstM, secondM, doorSide: balconyStep.doorSide });
   } catch (error) {
     showError(error);
     return;
@@ -4798,6 +5297,7 @@ elements.roomCanvas.addEventListener("click", (event) => {
     activeRoomWall = wallIndex;
     renderRoomInput();
     refreshVoiceTarget();
+    recordHistory();
     return;
   }
   // Correcting a measured room: nothing blinks before, one tap on the wall to fix opens the microphone.
@@ -4808,6 +5308,7 @@ elements.roomCanvas.addEventListener("click", (event) => {
     : null;
   renderRoomInput();
   selectVoiceTargetById(tappedField);
+  recordHistory();
   startContextVoice();
 });
 elements.adjacentCanvas.addEventListener("click", (event) => {
@@ -4908,6 +5409,21 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     startWallFix(length.wallIndex);
     return;
   }
+  // On a small room, a finger may land just inside the drawn door. The door takes priority over the interior.
+  const doorHit = openingStep ? null : room.openings
+    .filter((opening) => !isEntranceOpening(currentRoomIndex, opening) &&
+      (opening.kind === "door" || connectionForOpening(packageData, currentRoomIndex, opening.id)))
+    .map((opening) => {
+      const wallIndex = openingWallIndex(room, opening);
+      const [x1, y1, x2, y2] = canvasWallSegment(elements.openingCanvas, room, wallIndex, opening);
+      return { opening, distance: distanceToCanvasSegment(x, y, [x1, y1], [x2, y2]) };
+    })
+    .filter((hit) => hit.distance < 36)
+    .sort((first, second) => first.distance - second.distance)[0]?.opening;
+  if (doorHit) {
+    goThroughOpening(currentRoomIndex, doorHit.id);
+    return;
+  }
   if (tapIsInsideRoom(elements.openingCanvas, room, x, y)) {
     // A tap inside the room: what is there (storage, column, floor opening) is asked at once at that place.
     clearOpeningEdit();
@@ -4969,8 +5485,10 @@ elements.openingCanvas.addEventListener("click", async (event) => {
   openingStep = { step: "kind", wallIndex };
   if (armedKind) {
     const kind = armedKind;
+    const doorSide = armedBalconySide;
     armedKind = null;
-    await chooseOpeningKind(kind);
+    armedBalconySide = null;
+    await chooseOpeningKind(kind, doorSide ?? "left");
     return;
   }
   renderOpenings();

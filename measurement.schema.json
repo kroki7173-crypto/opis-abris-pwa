@@ -14,7 +14,8 @@
     "address": { "type": "string", "minLength": 1, "maxLength": 1000 },
     "ceiling_height_m": { "type": "number", "minimum": 1.5, "maximum": 10, "description": "Ceiling height of the flat, named once at the end." },
     "rooms": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/room" } },
-    "connections": { "type": "array", "maxItems": 2500, "items": { "$ref": "#/$defs/connection" } }
+    "connections": { "type": "array", "maxItems": 2500, "items": { "$ref": "#/$defs/connection" } },
+    "voice_notes": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/voice_note" } }
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$" },
@@ -67,7 +68,8 @@
         "opening_id": { "$ref": "#/$defs/id" },
         "door_offset_m": { "type": "number", "minimum": 0, "maximum": 100 },
         "width_m": { "type": "number", "minimum": 0.3, "maximum": 100 },
-        "depth_m": { "type": "number", "minimum": 0.3, "maximum": 30 }
+        "depth_m": { "type": "number", "minimum": 0.3, "maximum": 30 },
+        "door_side": { "enum": ["left", "right"], "description": "The door side of the schematic balcony block, viewed from the room facing the balcony. The glazing width is not measured." }
       }
     },
     "interior": {
@@ -101,6 +103,19 @@
         "opening_b_id": { "$ref": "#/$defs/id" },
         "anchor_corner": { "enum": ["start", "end"] },
         "anchor_offset_m": { "type": "number", "minimum": 0, "maximum": 10000 }
+      }
+    },
+    "voice_note": {
+      "type": "object",
+      "required": ["id", "room_id", "mime_type", "bytes", "duration_ms", "created_at", "data_base64"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "room_id": { "$ref": "#/$defs/id" },
+        "mime_type": { "enum": ["audio/webm", "audio/mp4", "audio/ogg"] },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 500000 },
+        "duration_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "data_base64": { "type": "string", "contentEncoding": "base64" }
       }
     }
   }

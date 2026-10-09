@@ -1,3 +1,4 @@
+import { validateVoiceNotes } from "./voice_notes.js";
 export const FORMAT = "opis-abris-measurement";
 export const VERSION = 1;
 
@@ -664,6 +665,29 @@ export function balconyForOpening(room, openingId) {
   return (room?.balconies ?? []).find((item) => item.opening_id === openingId) ?? null;
 }
 
+export function balconySymbolWing(room, balcony) {
+  const door = room.openings.find((item) => item.id === balcony.opening_id);
+  const wall = room.walls.find((item) => item.id === door?.wall_id);
+  if (!door || !wall) return null;
+  // Only a conventional glass wing: its length is not a measured window dimension.
+  const orientation = Math.sign(signedArea(roomPoints(room))) || 1;
+  const before = (balcony.door_side ?? "left") === "left" ? orientation > 0 : orientation < 0;
+  const doorEnd = door.offset_m + door.width_m;
+  let roomSpace = before ? door.offset_m : wall.length_m - doorEnd;
+  for (const other of room.openings) {
+    if (other.id === door.id || other.wall_id !== door.wall_id) continue;
+    if (before && other.offset_m + other.width_m <= door.offset_m) {
+      roomSpace = Math.min(roomSpace, door.offset_m - other.offset_m - other.width_m);
+    }
+    if (!before && other.offset_m >= doorEnd) roomSpace = Math.min(roomSpace, other.offset_m - doorEnd);
+  }
+  const balconySpace = before ? balcony.door_offset_m
+    : balcony.width_m - balcony.door_offset_m - door.width_m;
+  const width_m = Math.min(0.8, roomSpace, Math.max(0, balconySpace));
+  if (width_m < 0.1) return null;
+  return { wall_id: door.wall_id, offset_m: before ? door.offset_m - width_m : doorEnd, width_m };
+}
+
 function balconyFrame(room, opening) {
   const wall = roomWalls(room).find((item) => item.wall.id === opening.wall_id);
   if (!wall) throw new Error("Балкон стоит у отсутствующей стены.");
@@ -751,7 +775,7 @@ function balconyStart(pkg, roomIndex, opening, width, depth, centerM) {
   return start;
 }
 
-function setBalcony(pkg, roomIndex, openingId, size, centerM, id) {
+function setBalcony(pkg, roomIndex, openingId, size, centerM, id, doorSide = "left") {
   const room = pkg?.rooms?.[roomIndex];
   const opening = room?.openings?.find((item) => item.id === openingId);
   if (!opening) throw new Error("Дверь балкона не найдена.");
@@ -766,7 +790,7 @@ function setBalcony(pkg, roomIndex, openingId, size, centerM, id) {
   const balcony = {
     id, opening_id: openingId,
     door_offset_m: Math.min(roundMetres(width - opening.width_m), Math.max(0, Math.round((opening.offset_m - start) * 1000) / 1000)),
-    width_m: width, depth_m: depth,
+    width_m: width, depth_m: depth, door_side: doorSide,
   };
   const next = structuredClone(pkg);
   const target = next.rooms[roomIndex];
@@ -776,19 +800,19 @@ function setBalcony(pkg, roomIndex, openingId, size, centerM, id) {
   return next;
 }
 
-export function addBalconyToPackage(pkg, roomIndex, openingId, { firstM, secondM }) {
-  return setBalcony(pkg, roomIndex, openingId, balconySize(firstM, secondM), null, identifier("balcony"));
+export function addBalconyToPackage(pkg, roomIndex, openingId, { firstM, secondM, doorSide = "left" }) {
+  return setBalcony(pkg, roomIndex, openingId, balconySize(firstM, secondM), null, identifier("balcony"), doorSide);
 }
 
 // A new size keeps the balcony's middle where it was; `centerM` (along the wall) moves it there.
-export function updateBalconyInPackage(pkg, roomIndex, balconyId, { firstM, secondM, centerM } = {}) {
+export function updateBalconyInPackage(pkg, roomIndex, balconyId, { firstM, secondM, centerM, doorSide } = {}) {
   const room = pkg?.rooms?.[roomIndex];
   const balcony = room?.balconies?.find((item) => item.id === balconyId);
   if (!balcony) throw new Error("Балкон не найден.");
   const opening = room.openings.find((item) => item.id === balcony.opening_id);
   const size = firstM === undefined ? { width_m: balcony.width_m, depth_m: balcony.depth_m } : balconySize(firstM, secondM);
   const middle = centerM ?? opening.offset_m - balcony.door_offset_m + balcony.width_m / 2;
-  return setBalcony(pkg, roomIndex, balcony.opening_id, size, middle, balcony.id);
+  return setBalcony(pkg, roomIndex, balcony.opening_id, size, middle, balcony.id, doorSide ?? balcony.door_side ?? "left");
 }
 
 export function removeBalconyFromPackage(pkg, roomIndex, balconyId) {
@@ -829,6 +853,9 @@ function validateBalconies(room) {
     if (!opening || opening.kind === "window") throw new Error("Балкон ссылается на отсутствующую дверь.");
     if (doors.has(opening.id)) throw new Error("У одной двери один балкон.");
     doors.add(opening.id);
+    if (balcony.door_side !== undefined && !["left", "right"].includes(balcony.door_side)) {
+      throw new Error("Сторона двери балконного блока должна быть слева или справа.");
+    }
     const width = Number(balcony.width_m);
     const depth = Number(balcony.depth_m);
     const offset = Number(balcony.door_offset_m);
@@ -844,7 +871,7 @@ function validateBalconies(room) {
 
 export const OPENING_PRESETS = {
   door: [0.6, 0.7, 0.8, 0.9, 1.0],
-  window: [0.6, 0.9, 1.3, 1.5, 1.8],
+  window: [0.6, 0.9, 1.15, 1.5, 1.8],
   passage: [0.8, 0.9, 1.0, 1.2, 1.5],
 };
 
@@ -852,7 +879,7 @@ export function addOpening(room, {
   kind = "door",
   wallIndex = 0,
   offsetM = 0,
-  widthM = 0.8,
+  widthM = null,
   reverse = false,
 } = {}) {
   if (!["door", "window", "passage"].includes(kind)) {
@@ -865,7 +892,8 @@ export function addOpening(room, {
   if (!Number.isFinite(offset) || offset < 0) {
     throw new Error("Отступ от угла не может быть отрицательным.");
   }
-  const width = positiveNumber(widthM, "Ширина проёма");
+  const defaultWidth = { door: 0.8, window: 1.15, passage: 0.9 }[kind];
+  const width = positiveNumber(widthM ?? defaultWidth, "Ширина проёма");
   if (offset + width > room.walls[wallIndex].length_m + 1e-9) {
     throw new Error("Проём выходит за границы выбранной стены.");
   }
@@ -1632,6 +1660,7 @@ export function validatePackage(pkg) {
     rooms.set(room.id, { room, wallIds, openingIds });
   }
 
+  validateVoiceNotes(pkg);
   if (!Array.isArray(pkg.connections) || pkg.connections.length > 2500) {
     throw new Error("Некорректный список связей комнат.");
   }

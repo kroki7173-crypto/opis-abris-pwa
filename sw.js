@@ -1,4 +1,4 @@
-const CACHE = "opis-abris-shell-v67";
+const CACHE = "opis-abris-shell-v73";
 const SHELL = [
   "./",
   "./index.html",
@@ -10,6 +10,9 @@ const SHELL = [
   "./icon.svg",
   "./apple-touch-icon.png",
   "./src/app.js",
+  "./src/interaction.js",
+  "./src/plan_annotations.js",
+  "./src/voice_notes.js",
   "./src/catalog.js",
   "./src/model.js",
   "./src/storage.js",

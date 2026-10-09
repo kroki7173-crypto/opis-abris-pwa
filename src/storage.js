@@ -77,3 +77,37 @@ export function deleteSurvey(packageId) {
   }
   return transaction("readwrite", (store) => store.delete(SURVEY_PREFIX + packageId));
 }
+
+
+const VOICE_PREFIX = "voice:";
+
+export function saveVoiceNote(packageId, noteId, blob) {
+  return transaction("readwrite", (store) => store.put(
+    { storage_kind: "voice_note", package_id: packageId, note_id: noteId, blob },
+    VOICE_PREFIX + packageId + ":" + noteId,
+  ));
+}
+
+export function loadVoiceNote(packageId, noteId) {
+  return transaction("readonly", (store) => store.get(VOICE_PREFIX + packageId + ":" + noteId))
+    .then((value) => value?.blob ?? null);
+}
+
+export async function deleteVoiceNotesForPackage(packageId) {
+  const keys = await transaction("readonly", (store) => store.getAllKeys());
+  const prefix = VOICE_PREFIX + packageId + ":";
+  const matching = keys.filter((key) => typeof key === "string" && key.startsWith(prefix));
+  if (!matching.length) return;
+  const database = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = database.transaction(STORE, "readwrite");
+      for (const key of matching) tx.objectStore(STORE).delete(key);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    database.close();
+  }
+}

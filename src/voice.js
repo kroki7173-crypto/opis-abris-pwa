@@ -354,6 +354,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
   const Recognition = scope?.SpeechRecognition ?? scope?.webkitSpeechRecognition;
   let active = null;
   let activeSession = null;
+  let requestVersion = 0;
 
   function capability() {
     if (!Recognition) return { available: false, reason: "Браузер не поддерживает распознавание речи." };
@@ -386,6 +387,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
 
   // One press of "Остановить" ends everything at once: the page does not wait for the browser to report the end.
   function stop() {
+    requestVersion += 1;
     if (!activeSession) return false;
     activeSession.cancelled = true;
     activeSession.cancel();
@@ -396,7 +398,9 @@ export function createVoiceController(scope, onStatus = () => {}) {
     mode, onValue, onListening = () => {}, timeoutMs = 8000, silenceMs = 1200, addressLessons = null,
   }) {
     stop();
+    const request = requestVersion;
     const { local } = await prepare();
+    if (request !== requestVersion) return null;
     const recognition = new Recognition();
     recognition.lang = "ru-RU";
     recognition.continuous = false;

@@ -100,6 +100,7 @@
     <section id="openingsScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
         <strong>Двери и окна</strong>
+        <button id="roomNoteButton" class="secondary compact room-note-trigger" type="button">🎙 Примечание</button>
         <span id="openingsRoomName" hidden></span>
       </div>
 
@@ -137,7 +138,7 @@
 
       <div class="type-tabs compact-tabs" role="group" aria-label="Тип проёма">
         <button type="button" data-kind="door" class="type"><span aria-hidden="true">▯</span>Дверь 0,80</button>
-        <button type="button" data-kind="window" class="type"><span aria-hidden="true">═</span>Окно 1,30</button>
+        <button type="button" data-kind="window" class="type"><span aria-hidden="true">═</span>Окно 1,15</button>
         <button type="button" data-kind="passage" class="type"><span aria-hidden="true">□</span>Проём</button>
         <button type="button" data-kind="balcony" class="type"><span aria-hidden="true">▤</span>Балкон</button>
       </div>
@@ -287,8 +288,8 @@
       <span id="summaryAddress" hidden></span>
       <figure class="preview plan-stage final-plan-stage">
         <canvas id="planCanvas" width="720" height="620"
-                aria-label="Общий план. Коснитесь комнаты, чтобы изменить её"></canvas>
-        <figcaption class="plan-tip">Разведите пальцы для увеличения. Увеличенный план двигайте одним пальцем</figcaption>
+                aria-label="Общий план с длинами стен, номерами и площадями комнат. Коснитесь комнаты, чтобы изменить её"></canvas>
+        <figcaption class="plan-tip">На плане: длины стен в метрах, номер и площадь комнаты в м². Разведите пальцы для увеличения. Увеличенный план двигайте одним пальцем</figcaption>
       </figure>
 
       <p id="summaryHeight" class="summary-height" hidden></p>
@@ -298,12 +299,51 @@
       </section>
       <div id="roomSummary" hidden></div>
 
+      <section id="summaryNotes" class="summary-notes" aria-label="Голосовые примечания к комнатам">
+        <strong>Голосовые примечания</strong>
+        <p id="summaryNotesText"></p>
+        <div id="summaryNotesRooms"></div>
+      </section>
       <button id="shareButton" class="primary wide">Передать в настольное приложение</button>
       <div class="final-actions">
       </div>
       <button id="editButton" hidden type="button">Изменить размеры первой комнаты</button>
       <button id="newButton" class="secondary wide">Новый замер</button>
     </section>
+    <dialog id="balconySideDialog" class="balcony-side-dialog">
+      <div class="dialog-body">
+        <h2>Выберите условный знак балконного блока</h2>
+        <p class="hint">Вид из комнаты в сторону балкона. Ширину остекления сейчас не измеряем.</p>
+        <button type="button" data-balcony-side="left" class="secondary wide balcony-side-choice" aria-label="Балконный блок: дверь слева" title="Дверь слева">
+          <svg viewBox="0 0 240 80" aria-hidden="true" focusable="false">
+            <path class="symbol-wall" d="M8 20H35M8 60H35M205 20H232M205 60H232M35 14V66M205 14V66"/>
+            <path class="symbol-frame" d="M35 24H94M35 56H94M94 20V60M94 24H205M94 56H205"/>
+            <path class="symbol-door" d="M40 26H89V54H40ZM40 40H89"/>
+            <path class="symbol-glass" d="M95 28H204M95 40H204M95 52H204"/>
+          </svg>
+        </button>
+        <button type="button" data-balcony-side="right" class="secondary wide balcony-side-choice" aria-label="Балконный блок: дверь справа" title="Дверь справа">
+          <svg class="balcony-side-mirror" viewBox="0 0 240 80" aria-hidden="true" focusable="false">
+            <path class="symbol-wall" d="M8 20H35M8 60H35M205 20H232M205 60H232M35 14V66M205 14V66"/>
+            <path class="symbol-frame" d="M35 24H94M35 56H94M94 20V60M94 24H205M94 56H205"/>
+            <path class="symbol-door" d="M40 26H89V54H40ZM40 40H89"/>
+            <path class="symbol-glass" d="M95 28H204M95 40H204M95 52H204"/>
+          </svg>
+        </button>
+        <button id="balconySideCancel" type="button" class="quiet wide">Отмена</button>
+      </div>
+    </dialog>
+    <dialog id="roomNoteDialog" class="room-note-dialog">
+      <div class="dialog-body">
+        <div class="dialog-head"><h2 id="roomNoteTitle">Примечание к комнате</h2>
+          <button id="roomNoteClose" class="quiet dialog-close" type="button" aria-label="Закрыть">×</button></div>
+        <p class="hint">Скажите, что уточнить на настольном плане: например, «вентканал вдоль стены B–C». Запись сохранится с этой комнатой.</p>
+        <button id="roomNoteRecord" class="primary wide" type="button">🎙 Записать примечание</button>
+        <button id="roomNoteCancel" class="quiet wide" type="button" hidden>Отменить запись</button>
+        <p id="roomNoteStatus" class="hint" role="status"></p>
+        <div id="roomNoteList" class="room-note-list"></div>
+      </div>
+    </dialog>
     <button id="contextMicButton" class="context-mic" type="button" aria-label="Включить микрофон" title="Включить микрофон">🎙</button>
 
     <section id="settingsScreen" class="card screen" hidden>
@@ -330,22 +370,27 @@
           Угол неверный — коснитесь его буквы и скажите угол заново, например «сто тридцать пять».
           Двери, окна и комнаты за ними остаются на месте. Угол A считается сам из остальных.</p>
         <h3>Отменить — стрелка вверху</h3>
-        <p>Стрелка <b>↶</b> в шапке отменяет последнюю записанную цифру или поставленную вещь и
-          показывает, что отменено. Если отменена цифра, программа сразу спрашивает её снова.
-          Стрелка <b>↷</b> возвращает отменённое. Отменять можно и после того, как телефон закрыл
-          приложение, — в том же объекте; у другого объекта своя отмена.</p>
+        <p>Стрелка <b>↶</b> возвращает ровно одно действие: выбор стены, вопрос, замер или переход.
+          Если число уже записано, тот же вопрос на той же стене откроется снова. Если микрофон ещё ждёт ответ,
+          стрелка закроет его и оставит выбранную стену. <b>↷</b> повторяет отменённое.
+          История сохраняется в этом объекте и после закрытия приложения.</p>
         <h3>Толщина каждой стены</h3>
         <p>На рисунке комнаты внутри каждой стены есть число «т» — её толщина в метрах. Коснитесь числа и назовите
           свою толщину, даже если длина этой стены подставлена от противоположной. Полная общая стена меняется в обеих комнатах.
           Если число не исправлять, действует показанная толщина по умолчанию.</p>
         <h3>Другая комната</h3>
         <p>Маленький план в углу рисунка — вся квартира. Коснитесь на нём комнаты — откроется она.
-          Коснитесь двери на рисунке — пройдёте в комнату за ней, а если там ещё не мерили, начнётся
-          её замер. На уже общей стене можно поставить «Проём»: он появится в обеих комнатах и поведёт
+          Коснитесь двери на рисунке или кнопки «Войти» под ним — пройдёте в комнату за ней;
+          если там ещё не мерили, начнётся её замер. Для маленькой комнаты разведите два пальца
+          на плане, затем сдвигайте увеличенный план одним пальцем. Сведите пальцы, чтобы уменьшить.
+          На уже общей стене можно поставить «Проём»: он появится в обеих комнатах и поведёт
           в уже обмеренную комнату.</p>
         <h3>Санузел, кладовка, колонна</h3>
         <p>Коснитесь внутри комнаты, где они стоят, и ответьте на вопросы. Когда всё названо, программа
           вернётся к дверям и окнам. Коснулись внутри по ошибке — коснитесь снаружи комнаты.</p>
+        <h3>Примечание</h3>
+        <p>То, что не выразить размерами — вентканал, стояк, — наговорите кнопкой «🎙 Примечание» у
+          комнаты. Запись уйдёт вместе с замером, на компьютере её прослушают.</p>
         <h3>Удалить</h3>
         <p>Дверь или окно — кнопка «Удалить» в их строке под рисунком. Комнату — кнопка
           «Удалить комнату» в самом низу. Удалили не то — стрелка ↶.</p>
