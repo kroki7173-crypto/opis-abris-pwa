@@ -1165,6 +1165,49 @@ export function setOpeningWallThickness(pkg, roomIndex, openingId, thicknessM) {
   return finishEdit(next);
 }
 
+// Толщина задаётся стене независимо от того, измерена её длина или взята у противоположной стены.
+// Полная общая стена имеет одну толщину с обеих сторон; частичные дверные привязки сохраняют свою.
+export function setWallThickness(pkg, roomIndex, wallIndex, thicknessM) {
+  validatePackage(pkg);
+  const room = pkg.rooms[roomIndex];
+  const wall = room?.walls?.[wallIndex];
+  if (!wall) throw new Error("Стена не найдена.");
+  const thickness = positiveNumber(thicknessM, "Толщина стены");
+  if (thickness > 2) throw new Error("Толщина стены: допустимо до 2 м.");
+  const childConnection = (pkg.connections ?? []).find((connection) =>
+    connection.mode === "door_anchor" && connection.room_b_id === room.id && connection.wall_b_id === wall.id);
+  if (childConnection) return setOpeningWallThickness(pkg, roomIndex, childConnection.opening_b_id, thickness);
+  const next = structuredClone(pkg);
+  const queue = [[room.id, wall.id]];
+  const seen = new Set();
+  while (queue.length) {
+    const [roomId, wallId] = queue.shift();
+    const key = roomId + ":" + wallId;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const current = next.rooms.find((item) => item.id === roomId);
+    const currentWall = current.walls.find((item) => item.id === wallId);
+    currentWall.thickness_m = thickness;
+    const partialOpenings = new Set((next.connections ?? [])
+      .filter((connection) => connection.mode === "door_anchor" &&
+        (connection.room_a_id === roomId && connection.wall_a_id === wallId ||
+         connection.room_b_id === roomId && connection.wall_b_id === wallId))
+      .map((connection) => connection.room_a_id === roomId ? connection.opening_a_id : connection.opening_b_id));
+    for (const opening of current.openings) {
+      if (opening.wall_id === wallId && !partialOpenings.has(opening.id)) opening.wall_thickness_m = thickness;
+    }
+    for (const connection of next.connections ?? []) {
+      if ((connection.mode ?? "full_wall") !== "full_wall") continue;
+      if (connection.room_a_id === roomId && connection.wall_a_id === wallId) {
+        queue.push([connection.room_b_id, connection.wall_b_id]);
+      } else if (connection.room_b_id === roomId && connection.wall_b_id === wallId) {
+        queue.push([connection.room_a_id, connection.wall_a_id]);
+      }
+    }
+  }
+  return finishEdit(next);
+}
+
 // A corrected wall length (Bolat, 06.10.2026): a rectangle changes both opposite walls, and every room behind its
 // doors moves with it. A wall shared whole with the room it was measured from is that room's wall.
 export function setWallLength(pkg, roomIndex, wallIndex, lengthM, { parentSide } = {}) {
@@ -1835,6 +1878,17 @@ export function inferPartitionThickness(pkg) {
   if (!changed) return pkg;
   next.updated_at = new Date().toISOString();
   validatePackage(next);
+  return next;
+}
+
+// В выдаваемом плане у каждой стены есть собственное числовое значение толщины.
+// Старые замеры без индивидуальной записи получают действующую толщину комнаты.
+export function withExplicitWallThickness(pkg) {
+  validatePackage(pkg);
+  const next = structuredClone(pkg);
+  for (const room of next.rooms) {
+    for (const wall of room.walls) wall.thickness_m = wallThickness(room, wall);
+  }
   return next;
 }
 

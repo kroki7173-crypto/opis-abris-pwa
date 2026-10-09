@@ -31,6 +31,7 @@ import {
   roomAcrossOpening,
   setCornerAngle,
   setOpeningWallThickness,
+  setWallThickness,
   setWallLength,
   solveOutline,
   updateBalconyInPackage,
@@ -38,6 +39,7 @@ import {
   updateOpeningInPackage,
   validatePackage,
   wallThickness,
+  withExplicitWallThickness,
 } from "./model.js";
 import {
   clearDraft,
@@ -1473,6 +1475,27 @@ function drawCornerLetters(context, corners, outward) {
     context.fillText(cornerName(index), corner[0] + bisector[0] / length * 30, corner[1] + bisector[1] / length * 30);
   });
 }
+// Каждая стена подписана своей толщиной; число внутри комнаты можно коснуться для исправления.
+function drawWallThicknessLabels(canvas, room, corners) {
+  if (canvas !== elements.openingCanvas) return;
+  const context = canvas.getContext("2d");
+  const outward = canvasOutward(corners);
+  context.save();
+  context.fillStyle = uiColor("--muted", "#4a5568");
+  context.font = "700 19px system-ui";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  room.walls.forEach((wall, wallIndex) => {
+    const start = corners[wallIndex];
+    const end = corners[(wallIndex + 1) % corners.length];
+    const normal = outward(start, end);
+    const x = (start[0] + end[0]) / 2 - normal[0] * 30;
+    const y = (start[1] + end[1]) / 2 - normal[1] * 30;
+    context.fillText("т " + formatLength(wallThickness(room, wall)), x, y);
+    canvas.thicknessHitboxes.push({ wallIndex, x, y, left: x - 49, right: x + 49, top: y - 22, bottom: y + 22 });
+  });
+  context.restore();
+}
 function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) {
   const context = canvas.getContext("2d");
   const field = uiColor("--field", "#ffffff");
@@ -1535,6 +1558,7 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
     canvas.lengthHitboxes = canvas.lengthHitboxes ?? [];
     canvas.lengthHitboxes.push({ wallIndex, left: x - 46, right: x + 46, top: y - 30, bottom: y + 30 });
   });
+  drawWallThicknessLabels(canvas, room, corners);
   if (letters) drawCornerLetters(context, corners, outward);
   // A free-form room has its corners written down too, the way the technician said them; a tap on the letter says
   // the corner again (setCornerAngle). A right angle is not written: it is what a corner is without a number.
@@ -1592,6 +1616,7 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   context.fillRect(0, 0, canvas.width, canvas.height);
   canvas.dimensionHitboxes = [];
   canvas.lengthHitboxes = [];
+  canvas.thicknessHitboxes = [];
   canvas.cornerHitboxes = [];
   canvas.balconyShapes = [];
   if (!room) return;
@@ -1658,6 +1683,9 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
       bottom: label.y + (label.rotate ? 58 : 25),
     });
   }
+  drawWallThicknessLabels(canvas, room, [
+    [box.left, box.bottom], [box.right, box.bottom], [box.right, box.top], [box.left, box.top],
+  ]);
   // Corner letters, so "от угла A 2,00 м" in the list can be found on the drawing (PWA only, not exported).
   if (letters) {
     const corners = [[box.left, box.bottom], [box.right, box.bottom], [box.right, box.top], [box.left, box.top]];
@@ -3588,6 +3616,7 @@ async function applyFix(fix, raw) {
     packageData = fix.type === "wall" ? keepEndAnchors(packageData, setWallLength(packageData, fix.roomIndex, fix.wallIndex, String(value), { parentSide }))
       : fix.type === "height" ? setCeilingHeight(packageData, String(value))
       : fix.type === "angle" ? keepEndAnchors(packageData, setCornerAngle(packageData, fix.roomIndex, fix.corner, String(value)))
+      : fix.type === "wallThickness" ? setWallThickness(packageData, fix.roomIndex, fix.wallIndex, spokenMeasurement(raw, "thickness"))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
   } catch (error) {
@@ -3702,6 +3731,21 @@ let wallFix = null;
 function hideWallFix() {
   wallFix = null;
   elements.wallFixBar.hidden = true;
+}
+function startWallThicknessFix(wallIndex) {
+  const room = packageData.rooms[currentRoomIndex];
+  hideWallFix();
+  openingStep = null;
+  wallFix = { type: "wallThickness", roomIndex: currentRoomIndex, wallIndex,
+    value: wallThickness(room, room.walls[wallIndex]) };
+  elements.wallFixLabel.textContent = "Стена " + cornerName(wallIndex) + "–" +
+    cornerName((wallIndex + 1) % room.walls.length) + ", толщина (см или м):";
+  elements.wallFixInput.value = formatLength(wallFix.value);
+  elements.wallFixBar.hidden = false;
+  selectVoiceTarget(elements.wallFixInput, "thickness",
+    "толщину стены " + cornerName(wallIndex) + "–" + cornerName((wallIndex + 1) % room.walls.length));
+  if (voiceController.capability().available) startContextVoice();
+  else elements.wallFixInput.focus();
 }
 function startWallFix(wallIndex) {
   const room = packageData.rooms[currentRoomIndex];
@@ -3940,7 +3984,7 @@ async function sharePackage() {
   try {
     clearError();
     validatePackage(packageData);
-    const json = JSON.stringify(inferPartitionThickness(packageData), null, 2);
+    const json = JSON.stringify(withExplicitWallThickness(inferPartitionThickness(packageData)), null, 2);
     const blob = new Blob([json], { type: "application/json" });
     await deliverFile(
       blob,
@@ -4819,6 +4863,13 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     .find((box) => Math.hypot(x - box.x, y - box.y) < box.radius);
   if (cornerLabel) {
     startAngleFix(cornerLabel.corner);
+    return;
+  }
+  const thicknessLabel = openingStep ? null : (elements.openingCanvas.thicknessHitboxes ?? [])
+    .filter((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
+    .sort((first, second) => Math.hypot(x - first.x, y - first.y) - Math.hypot(x - second.x, y - second.y))[0];
+  if (thicknessLabel) {
+    startWallThicknessFix(thicknessLabel.wallIndex);
     return;
   }
   // A length label is outside its wall: only a tap outside the room and clear of the wall line corrects the number.

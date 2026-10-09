@@ -1,4 +1,4 @@
-import { fileNameFor, inferPartitionThickness, planProblems, validatePackage } from "./model.js";
+import { fileNameFor, inferPartitionThickness, planProblems, validatePackage, withExplicitWallThickness } from "./model.js";
 
 function dateValue(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -50,7 +50,7 @@ export function archiveEntriesForDay(records, day = new Date()) {
   return surveysForLocalDay(records, day).map((record, index) => {
     validatePackage(record.package);
     // Partitions between rooms not joined by a door go out as thick as the gap the app measured between them.
-    const pkg = inferPartitionThickness(record.package);
+    const pkg = withExplicitWallThickness(inferPartitionThickness(record.package));
     return {
       name: `${String(index + 1).padStart(3, "0")} - ${fileNameFor(pkg)}`,
       data: JSON.stringify(pkg, null, 2),

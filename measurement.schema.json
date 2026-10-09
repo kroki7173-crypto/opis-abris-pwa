@@ -26,7 +26,7 @@
         "id": { "$ref": "#/$defs/id" },
         "length_m": { "type": "number", "exclusiveMinimum": 0, "maximum": 10000 },
         "angle_deg": { "type": "number", "minimum": -360, "maximum": 360 },
-        "thickness_m": { "type": "number", "minimum": 0.01, "maximum": 2, "description": "Own thickness of a partition; absent means the room's wall_thickness_m (the perimeter)." },
+        "thickness_m": { "type": "number", "minimum": 0.01, "maximum": 2, "description": "Thickness of this wall. Drafts may omit it and use room.wall_thickness_m; current PWA exports always include it." },
         "source": { "enum": ["measured", "inferred_opposite", "confirmed_inferred", "inherited_shared"] }
       }
     },
