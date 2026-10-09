@@ -757,6 +757,7 @@ function setBalcony(pkg, roomIndex, openingId, size, centerM, id) {
   if (!opening) throw new Error("Дверь балкона не найдена.");
   if (opening.kind === "window") throw new Error("Балкон ставится у двери или проёма, не у окна.");
   if (connectionForOpening(pkg, roomIndex, openingId)) throw new Error("За этой дверью уже обмерена комната.");
+  if (fullWallConnection(pkg, roomIndex, opening.wall_id)) throw new Error("Балкон нельзя поставить на общей стене двух комнат.");
   const { width_m: width, depth_m: depth } = size;
   if (width < opening.width_m - 1e-9) {
     throw new Error(`Балкон ${roundMetres(width)} м уже двери ${roundMetres(opening.width_m)} м. Назовите размер ещё раз.`);
@@ -1040,6 +1041,19 @@ function mirroredOpening(pkg, roomIndex, opening) {
   const other = pkg.rooms[partner.otherIndex].openings.find((item) => item.wall_id === partner.otherWallId &&
     Math.abs(item.offset_m - expected) < 1e-6 && Math.abs(item.width_m - opening.width_m) < 1e-6);
   return other ? { ...partner, opening: other } : null;
+}
+
+// Проём полной общей стены ведёт в уже обмеренную комнату, даже если он не был исходной дверью связи.
+export function roomAcrossOpening(pkg, roomIndex, openingId) {
+  const room = pkg?.rooms?.[roomIndex];
+  const opening = room?.openings.find((item) => item.id === openingId);
+  if (!opening || opening.kind === "window") return -1;
+  const connection = connectionForOpening(pkg, roomIndex, openingId);
+  if (connection) {
+    const otherId = connection.room_a_id === room.id ? connection.room_b_id : connection.room_a_id;
+    return pkg.rooms.findIndex((item) => item.id === otherId);
+  }
+  return mirroredOpening(pkg, roomIndex, opening)?.otherIndex ?? -1;
 }
 
 export function addOpeningToPackage(pkg, roomIndex, values) {

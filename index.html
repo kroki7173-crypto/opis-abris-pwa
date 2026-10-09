@@ -148,7 +148,7 @@
         <button id="openingWidthButton" class="dimension-chip quiet" type="button">Ширина <strong id="openingWidthValue">0,80</strong> м</button>
       </div>
       <div id="widthPresets" class="presets" hidden aria-label="Быстрые размеры"></div>
-      <p id="wallLockHint" class="message notice" hidden>Эта стена уже связана с другой комнатой.</p>
+      <p id="wallLockHint" class="message notice" hidden>Общая стена: проём появится в обеих комнатах.</p>
       <div class="opening-edit-actions">
         <button id="addOpeningButton" class="primary wide" type="button">Сохранить изменения</button>
         <button id="openingCancelEditButton" class="quiet wide" type="button">Отменить правку</button>
@@ -288,7 +288,7 @@
       <figure class="preview plan-stage final-plan-stage">
         <canvas id="planCanvas" width="720" height="620"
                 aria-label="Общий план. Коснитесь комнаты, чтобы изменить её"></canvas>
-        <figcaption class="plan-tip">Коснитесь комнаты, чтобы изменить. Двигайте и разводите пальцами</figcaption>
+        <figcaption class="plan-tip">Разведите пальцы для увеличения. Увеличенный план двигайте одним пальцем</figcaption>
       </figure>
 
       <p id="summaryHeight" class="summary-height" hidden></p>
@@ -337,7 +337,8 @@
         <h3>Другая комната</h3>
         <p>Маленький план в углу рисунка — вся квартира. Коснитесь на нём комнаты — откроется она.
           Коснитесь двери на рисунке — пройдёте в комнату за ней, а если там ещё не мерили, начнётся
-          её замер.</p>
+          её замер. На уже общей стене можно поставить «Проём»: он появится в обеих комнатах и поведёт
+          в уже обмеренную комнату.</p>
         <h3>Санузел, кладовка, колонна</h3>
         <p>Коснитесь внутри комнаты, где они стоят, и ответьте на вопросы. Когда всё названо, программа
           вернётся к дверям и окнам. Коснулись внутри по ошибке — коснитесь снаружи комнаты.</p>

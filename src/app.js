@@ -28,6 +28,7 @@ import {
   roomInteriorAngles,
   roomOuterPolygon,
   roomPoints,
+  roomAcrossOpening,
   setCornerAngle,
   setOpeningWallThickness,
   setWallLength,
@@ -725,7 +726,7 @@ function syncHeaderTitle() {
   const address = (currentScreen === "start" || !packageData ? elements.address.value : packageData.address).trim();
   if (elements.headerTitle) elements.headerTitle.textContent = address || "Новый замер";
 }
-// Two fingers zoom and move the plan together; one finger only taps (a short tap on a room opens it).
+// Two fingers zoom the plan; one finger moves it when enlarged, or taps a room to open it.
 function pointInPolygon(point, polygon) {
   let inside = false;
   for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
@@ -793,7 +794,10 @@ function installPlanGestures() {
     const spread = points.length > 1 ? Math.hypot(points[0][0] - points[1][0], points[0][1] - points[1][1]) : 0;
     return { mid, spread };
   };
-  const redraw = () => drawPlan(canvas, packageData, planView);
+  const redraw = () => {
+    canvas.classList.toggle("zoomed", planView.zoom > 1.001);
+    drawPlan(canvas, packageData, planView);
+  };
   canvas.addEventListener("pointerdown", (event) => {
     try { canvas.setPointerCapture(event.pointerId); } catch { /* Capture only keeps the drag alive outside the canvas. */ }
     pointers.set(event.pointerId, toCanvas(event.clientX, event.clientY));
@@ -806,8 +810,18 @@ function installPlanGestures() {
     pointers.set(event.pointerId, toCanvas(event.clientX, event.clientY));
     const current = snapshot();
     if (pointers.size < 2) {
-      // One finger never moves the plan: it must stay still so the page can be scrolled.
-      if (tap && Math.hypot(current.mid[0] - tap.at[0], current.mid[1] - tap.at[1]) > 12) tap.moved = true;
+      const distance = tap ? Math.hypot(current.mid[0] - tap.at[0], current.mid[1] - tap.at[1]) : 0;
+      if (tap && distance > 12) tap.moved = true;
+      // At normal size one finger scrolls the page. Once enlarged, it drags the plan.
+      if (planView.zoom > 1.001 && last) {
+        const dx = current.mid[0] - last.mid[0];
+        const dy = current.mid[1] - last.mid[1];
+        if (dx || dy) {
+          planView = { ...planView, x: planView.x + dx, y: planView.y + dy };
+          if (tap && distance > 3) tap.moved = true;
+          redraw();
+        }
+      }
       last = current;
       return;
     }
@@ -895,7 +909,10 @@ function showScreen(name) {
     syncAddressStep();
   }
   syncHeaderTitle();
-  if (name === "done") planView = { zoom: 1, x: 0, y: 0 };
+  if (name === "done") {
+    planView = { zoom: 1, x: 0, y: 0 };
+    elements.planCanvas.classList.remove("zoomed");
+  }
   if (name !== "openings") cancelAnimationFrame(openingPulseFrame);
   if (name !== "openings" && elements.wallFixBar) elements.wallFixBar.hidden = true;
   if (name !== "openings") {
@@ -2474,6 +2491,12 @@ async function chooseOpeningKind(kind) {
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
   try {
+    const chosenWall = openingStep?.step === "kind" ? room.walls[openingStep.wallIndex]
+      : room.walls.find((wall) => wall.id === stepOpening()?.wall_id);
+    if (kind === "balcony" && chosenWall && connectionsForWall(packageData, currentRoomIndex, chosenWall.id)
+      .some((connection) => (connection.mode ?? "full_wall") === "full_wall")) {
+      throw new Error("Балкон нельзя поставить на общей стене двух комнат.");
+    }
     if (openingStep?.step === "kind") {
       const wall = room.walls[openingStep.wallIndex];
       const width = OPENING_DEFAULT_WIDTH[kind];
@@ -2560,7 +2583,7 @@ function afterOpeningThickness(id, placedNow = false, balconyPlaced = false) {
   openingStep = null;
   const opening = packageData?.rooms?.[currentRoomIndex]?.openings?.find((item) => item.id === id);
   const owesBalcony = balcony && opening && !balconyForOpening(packageData.rooms[currentRoomIndex], id);
-  if (!opening || (editing && !owesBalcony) || opening.kind === "window" || connectionForOpening(packageData, currentRoomIndex, id)) {
+  if (!opening || (editing && !owesBalcony) || opening.kind === "window" || connectedRoomIndex(currentRoomIndex, id) >= 0) {
     renderOpenings();
     return;
   }
@@ -2574,11 +2597,7 @@ function afterOpeningThickness(id, placedNow = false, balconyPlaced = false) {
 }
 // The room on the other side of a door, or -1 while nothing is measured behind it.
 function connectedRoomIndex(roomIndex, openingId) {
-  const connection = connectionForOpening(packageData, roomIndex, openingId);
-  if (!connection) return -1;
-  const roomId = packageData.rooms[roomIndex].id;
-  const otherId = connection.room_a_id === roomId ? connection.room_b_id : connection.room_a_id;
-  return packageData.rooms.findIndex((room) => room.id === otherId);
+  return roomAcrossOpening(packageData, roomIndex, openingId);
 }
 // Walking through a door (Bolat, 05.10.2026): into the room behind it if it is measured, otherwise measure it.
 function goThroughOpening(roomIndex, openingId) {
@@ -2699,7 +2718,7 @@ function renderOpenings() {
     (connection) => (connection.mode ?? "full_wall") === "full_wall",
   );
   elements.wallLockHint.hidden = !selectedFullConnection;
-  elements.addOpeningButton.disabled = selectedFullConnection;
+  elements.addOpeningButton.disabled = false;
   const displayRoom = editingOpening
     ? { ...room, openings: room.openings.filter((item) => item.id !== editingOpeningId) }
     : room;
@@ -2740,9 +2759,9 @@ function renderOpenings() {
       if (currentScreen === "openings" && openingStep?.step !== "thickness") openingPulseFrame = requestAnimationFrame(draw);
       return;
     }
-    drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive && !selectedFullConnection);
+    drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive);
     drawOpeningDistances(elements.openingCanvas, displayRoom);
-    if (openingPlacementActive && !selectedFullConnection) {
+    if (openingPlacementActive) {
       const offset = decimal(elements.openingOffset.value);
       const width = decimal(elements.openingWidth.value);
       if (Number.isFinite(offset) && offset >= 0 && width > 0 && offset + width <= room.walls[wallIndex].length_m) {
@@ -4891,10 +4910,6 @@ elements.openingCanvas.addEventListener("click", async (event) => {
       renderOpenings();
       schedulePersist();
     }
-    return;
-  }
-  if (connectionsForWall(packageData, currentRoomIndex, wall.id).some((item) => (item.mode ?? "full_wall") === "full_wall")) {
-    showError("Эта стена целиком общая с соседней комнатой: её двери и окна уже на месте.");
     return;
   }
   // A tap on a wall starts a new opening there: first the question what is in it, unless it was chosen before.
