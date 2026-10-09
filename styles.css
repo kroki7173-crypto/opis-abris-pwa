@@ -16,6 +16,8 @@
   --danger-bg: #fbdedb;
   --danger-border: #d9aca5;
   --measured: #2f8a45;
+  /* The wall whose thickness is asked: violet, apart from the red of a length being asked (Bolat, 10.10.2026). */
+  --thickness-ask: #6c4bb4;
   --busy: #1e7a45;
   --busy-bg: #e7f3eb;
   --button: #285778;
@@ -48,6 +50,7 @@
   --danger-bg: #452c29;
   --danger-border: #c0453c;
   --measured: #5cc27a;
+  --thickness-ask: #c3a6ff;
   --busy: #7fc79a;
   --busy-bg: #263b30;
   --button: #a9c7e4;

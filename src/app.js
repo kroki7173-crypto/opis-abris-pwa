@@ -81,6 +81,7 @@ const ids = [
   "openingWidth", "widthPresets", "addOpeningButton", "openingCancelEditButton", "openingList",
   "openingEditPanel", "openingOffsetButton", "openingOffsetValue", "openingCornerName", "openingWidthButton", "openingWidthValue",
   "openingThicknessPrompt", "openingThicknessText", "wallLengthPrompt", "wallLengthText",
+  "wallThicknessPrompt", "wallThicknessText",
   "interiorCanvas", "interiorWall",
   "interiorOffset", "interiorInset", "interiorWidth", "interiorDepth", "interiorName",
   "interiorPartition", "interiorDoorWidth", "interiorDoorWall", "storageFields",
@@ -623,6 +624,86 @@ function askPhrasePlace(openingId, anchor) {
   schedulePersist();
 }
 
+// The thickness of every wall (Bolat, 10.10.2026). In a flat the perimeter is not one thickness — thinner to the
+// stairs, thicker to the street: a named thickness goes along its straight line to the walls of other rooms and
+// across a partition to the room behind; in a house the entrance thickness goes to every outer wall. What is still
+// unknown is asked one wall at a time: a red "Толщина стены B–C ?" and the wall glowing violet (red is a length).
+// The rules are thickness.js (Codex, docs/tz/2026-10-10_wall-thickness.md); until it is there nothing is asked.
+let thicknessModule = null;
+import("./thickness.js")
+  .then((module) => {
+    thicknessModule = module;
+    if (currentScreen === "openings") renderOpenings();
+  })
+  .catch(() => { /* Not delivered yet: the thickness questions wait for it. */ });
+// Walls whose thickness the technician named (ids); on the phone only, not in the measurement file.
+let thicknessSaid = [];
+// The wall a remark asked about: it is asked before the others of its room.
+let thicknessAsk = null;
+let houseNoticeFor = null;
+function isHouse() {
+  return Boolean(thicknessModule?.isHouseAddress?.(packageData?.address ?? ""));
+}
+// A thickness named by the technician: the wall is known, and the thickness goes on by the rules.
+function noteThickness(roomIndex, wallIndex) {
+  const room = packageData?.rooms?.[roomIndex];
+  const wall = room?.walls?.[wallIndex];
+  if (!wall) return;
+  if (!thicknessSaid.includes(wall.id)) thicknessSaid = [...thicknessSaid, wall.id];
+  if (thicknessAsk?.roomIndex === roomIndex && thicknessAsk.wallIndex === wallIndex) thicknessAsk = null;
+  if (!thicknessModule) return;
+  try {
+    const value = wallThickness(room, wall);
+    const result = thicknessModule.nameThickness(packageData, roomIndex, wallIndex, value, thicknessSaid, { house: isHouse() });
+    packageData = result.pkg;
+    thicknessSaid = result.said ?? thicknessSaid;
+    if (result.spread?.length) {
+      showNotice(`Толщина ${formatLength(value)} — и у ${result.spread.length} ${result.spread.length === 1 ? "стены" : "стен"} на той же линии.`, 4500);
+    }
+  } catch (error) {
+    showError(error);
+  }
+}
+function noteOpeningThickness(roomIndex, openingId) {
+  const room = packageData?.rooms?.[roomIndex];
+  const opening = room?.openings?.find((item) => item.id === openingId);
+  if (opening) noteThickness(roomIndex, openingWallIndex(room, opening));
+}
+function thicknessStatuses() {
+  if (!thicknessModule || !packageData?.rooms?.length) return [];
+  try {
+    return thicknessModule.thicknessStatus(packageData, thicknessSaid, { house: isHouse() });
+  } catch {
+    return [];
+  }
+}
+// The wall of this room whose thickness is asked next, or null.
+function thicknessWallToAsk(roomIndex) {
+  const open = thicknessStatuses().filter((item) => item.roomIndex === roomIndex && item.status === "open");
+  if (thicknessAsk?.roomIndex === roomIndex && open.some((item) => item.wallIndex === thicknessAsk.wallIndex)) {
+    return thicknessAsk.wallIndex;
+  }
+  return open[0]?.wallIndex ?? null;
+}
+// The wall glows violet while its thickness is asked.
+function strokeThicknessWall(canvas, room, wallIndex) {
+  const segment = canvasWallSegment(canvas, room, wallIndex, { offset_m: 0, width_m: room.walls[wallIndex].length_m });
+  const context = canvas.getContext("2d");
+  const phase = (Math.sin(Date.now() / 220) + 1) / 2;
+  const color = uiColor("--thickness-ask", "#6c4bb4");
+  context.save();
+  context.strokeStyle = color;
+  context.shadowColor = color;
+  context.shadowBlur = 6 + 16 * phase;
+  context.lineWidth = 10 + 4 * phase;
+  context.lineCap = "butt";
+  context.beginPath();
+  context.moveTo(segment[0], segment[1]);
+  context.lineTo(segment[2], segment[3]);
+  context.stroke();
+  context.restore();
+}
+
 function installVoiceInputs() {
   const capability = voiceController.capability();
   for (const [id, mode, label] of VOICE_FIELDS) {
@@ -958,6 +1039,11 @@ function initializeUi() {
     selectVoiceTargetById(openingStep?.step === "width" ? "openingWidth" : "wallThickness");
     startContextVoice();
   });
+  // The violet wall's thickness: the same field and microphone as a tap on its "т".
+  elements.wallThicknessPrompt.addEventListener("click", () => {
+    const wallIndex = thicknessWallToAsk(currentRoomIndex);
+    if (wallIndex !== null) startWallThicknessFix(wallIndex);
+  });
   // A tapped wall can be measured right there, before or after its doors and windows (Bolat, 07.10.2026): the
   // technician walks his own way round the room.
   elements.wallLengthPrompt.addEventListener("click", () => {
@@ -1288,6 +1374,7 @@ function draftValue() {
     returnToIssues,
     openingAnchors,
     phraseUnplaced,
+    thicknessSaid,
     package: packageData,
     currentRoomIndex,
     pendingAdjacent,
@@ -1418,6 +1505,8 @@ function restoreForm(draft) {
   returnToIssues = Boolean(draft?.returnToIssues);
   openingAnchors = draft?.openingAnchors && typeof draft.openingAnchors === "object" ? { ...draft.openingAnchors } : {};
   phraseUnplaced = Array.isArray(draft?.phraseUnplaced) ? draft.phraseUnplaced.filter((id) => typeof id === "string") : [];
+  thicknessSaid = Array.isArray(draft?.thicknessSaid) ? draft.thicknessSaid.filter((id) => typeof id === "string") : [];
+  thicknessAsk = null;
   // A door or storage half placed when the page reloaded continues at the same question.
   openingStep = restoreOpeningStep(draft?.openingStep);
   interiorStep = restoreInteriorStep(draft?.interiorStep);
@@ -3261,6 +3350,12 @@ function renderOpenings() {
     depth_m: 1,
     door_side: balconyStep?.doorSide ?? "left",
   } : null;
+  // The thickness of a wall is asked only when nothing else is: no step of an opening, no balcony, no open field,
+  // no thickness owed to a door or window.
+  const owesOpeningThickness = openingStep?.step === "thickness" ||
+    (openingStep?.step !== "width" && Boolean(latestOpeningWithoutThickness(room)));
+  const thicknessWall = !openingStep && !balconyStep?.asking && !wallFix && !owesOpeningThickness
+    ? thicknessWallToAsk(currentRoomIndex) : null;
   cancelAnimationFrame(openingPulseFrame);
   const draw = () => {
     if (openingStep?.step === "kind" || guided) {
@@ -3279,6 +3374,10 @@ function renderOpenings() {
     }
     drawRoom(elements.openingCanvas, displayRoom, wallIndex, openingPlacementActive);
     drawOpeningDistances(elements.openingCanvas, displayRoom);
+    if (thicknessWall !== null && !openingPlacementActive) {
+      strokeThicknessWall(elements.openingCanvas, displayRoom, thicknessWall);
+      if (currentScreen === "openings") openingPulseFrame = requestAnimationFrame(draw);
+    }
     if (openingPlacementActive) {
       const offset = decimal(elements.openingOffset.value);
       const width = decimal(elements.openingWidth.value);
@@ -3307,6 +3406,17 @@ function renderOpenings() {
     elements.wallLengthText.textContent = `Длина ${from}–${to}: ${formatLength(askingWall.length_m)} м ?`;
   }
   elements.openingThicknessPrompt.hidden = Boolean(askingWall) || (!missingThickness && openingStep?.step !== "width");
+  elements.wallThicknessPrompt.hidden = thicknessWall === null || !elements.openingThicknessPrompt.hidden;
+  if (thicknessWall !== null) {
+    elements.wallThicknessText.textContent =
+      `Толщина стены ${cornerName(thicknessWall)}–${cornerName((thicknessWall + 1) % room.walls.length)} ?`;
+  }
+  // A house: the entrance thickness went round every outer wall; a wall shared with a neighbour is corrected by its
+  // "т". Said once per object.
+  if (isHouse() && houseNoticeFor !== packageData.package_id && thicknessSaid.length) {
+    houseNoticeFor = packageData.package_id;
+    showNotice("Дом: наружные стены взяли толщину у входа. Стена с соседом другая — коснитесь её «т» и назовите.", 7000);
+  }
   if (openingStep?.step === "width" && guided) {
     elements.openingThicknessText.textContent = `Ширина ${OPENING_GENITIVE[guided.kind]} ?`;
   } else if (missingThickness) {
@@ -4054,6 +4164,15 @@ function validationIssues(pkg) {
         action: { type: "opening", roomIndex, openingId: opening.id }, fixes: [] });
     }
   });
+  // A wall whose thickness nobody named and no rule could give (Bolat, 10.10.2026).
+  for (const item of thicknessStatuses()) {
+    if (item.status !== "open") continue;
+    const room = pkg.rooms[item.roomIndex];
+    if (!room) continue;
+    const wall = `${cornerName(item.wallIndex)}–${cornerName((item.wallIndex + 1) % room.walls.length)}`;
+    issues.push({ key: "thickness:" + item.wallId, text: `«${room.name}»: не названа толщина стены ${wall}.`,
+      action: { type: "thickness", roomIndex: item.roomIndex, wallIndex: item.wallIndex }, fixes: [] });
+  }
   const seen = new Set();
   return issues.filter((issue) => !seen.has(issue.key) && seen.add(issue.key));
 }
@@ -4076,6 +4195,12 @@ function followIssue(action) {
     currentRoomIndex = action.roomIndex;
     showScreen("openings");
     askPhrasePlace(action.openingId, null);
+  } else if (action.type === "thickness") {
+    currentRoomIndex = action.roomIndex;
+    thicknessAsk = { roomIndex: action.roomIndex, wallIndex: action.wallIndex };
+    clearOpeningEdit();
+    showScreen("openings");
+    startWallThicknessFix(action.wallIndex);
   }
   persist();
 }
@@ -4122,6 +4247,8 @@ async function applyFix(fix, raw) {
       : fix.type === "wallThickness" ? setWallThickness(packageData, fix.roomIndex, fix.wallIndex, spokenMeasurement(raw, "thickness"))
       : setOpeningWallThickness(packageData, fix.roomIndex, fix.openingId, String(value));
     clearError();
+    if (fix.type === "wallThickness") noteThickness(fix.roomIndex, fix.wallIndex);
+    else if (fix.openingId) noteOpeningThickness(fix.roomIndex, fix.openingId);
   } catch (error) {
     showError(error);
   }
@@ -4581,6 +4708,7 @@ function currentDraftFromRecord(record) {
     entrance: record.entrance ?? null,
     openingAnchors: record.openingAnchors ?? {},
     phraseUnplaced: record.phraseUnplaced ?? [],
+    thicknessSaid: record.thicknessSaid ?? [],
     form: record.form ?? {},
   };
 }
@@ -4882,6 +5010,7 @@ elements.wallThickness.addEventListener("change", () => {
     return;
   }
   clearError();
+  noteOpeningThickness(currentRoomIndex, missing.id);
   renderOpenings();
   schedulePersist();
   afterOpeningThickness(missing.id);
@@ -5125,6 +5254,8 @@ elements.startButton.addEventListener("click", async () => {
     returnToIssues = false;
     openingAnchors = {};
     phraseUnplaced = [];
+    thicknessSaid = [];
+    thicknessAsk = null;
     elements.doorAnchor.value = "";
     activeRoomWall = 0;
     currentRoomIndex = 0;
@@ -5170,7 +5301,10 @@ async function saveFirstRoom(room) {
       widthM: String(ENTRANCE_WIDTH_M),
     });
     const door = packageData.rooms[0].openings.at(-1);
-    if (entrance.thickness) packageData = setOpeningWallThickness(packageData, 0, door.id, entrance.thickness);
+    if (entrance.thickness) {
+      packageData = setOpeningWallThickness(packageData, 0, door.id, entrance.thickness);
+      noteOpeningThickness(0, door.id);
+    }
     openingAnchors = { [door.id]: entrance.side ?? "start" };
   }
   showScreen("openings");
