@@ -63,7 +63,7 @@ import {
   surveysForLocalDay,
 } from "./catalog.js";
 import { createStoredZip } from "./zip.js";
-import { addressLesson, createVoiceController, spokenAddress, spokenBalcony, spokenMeasurement } from "./voice.js";
+import { addressLesson, addressStreet, createVoiceController, spokenAddress, spokenBalcony, spokenMeasurement } from "./voice.js";
 import { readPhrase } from "./phrase.js";
 import { historyRecord, updateZoomView } from "./interaction.js";
 import { planRoomAnnotations } from "./plan_annotations.js";
@@ -340,6 +340,7 @@ async function startContextVoice({ resume = false } = {}) {
       mode,
       timeoutMs: 8000,
       addressLessons: mode === "address" ? addressLessons() : null,
+      addressStreets: mode === "address" ? [...knownStreets, addressStreet(packageData?.address ?? "")] : [],
       onListening(listening) {
         if (run !== activeVoiceRun) return;
         voiceListening = listening;
@@ -725,6 +726,12 @@ let addressDictation = null;
 function addressLessons() {
   try { return JSON.parse(localStorage.getItem(ADDRESS_LESSONS_KEY) ?? "{}") ?? {}; } catch { return {}; }
 }
+// Streets of the saved objects: a dictated street is found among them by its sound even before any lesson.
+let knownStreets = [];
+function refreshKnownStreets(records) {
+  knownStreets = [...new Set(records.map((record) => addressStreet(record.package?.address ?? "")).filter(Boolean))];
+}
+listSurveys().then(refreshKnownStreets).catch(() => { /* Without the catalog only lessons help. */ });
 function rememberAddressCorrection() {
   const lesson = addressDictation ? addressLesson(addressDictation.transcript, elements.address.value) : null;
   elements.rememberAddressButton.hidden = true;
@@ -1650,8 +1657,8 @@ function drawOpeningSymbol(context, segment, opening, fieldColor) {
     context.lineTo(x2, y2);
     const middleX = (x1 + x2) / 2;
     const middleY = (y1 + y2) / 2;
-    context.moveTo(middleX - nx * jamb, middleY - ny * jamb);
-    context.lineTo(middleX + nx * jamb, middleY + ny * jamb);
+    context.moveTo(middleX - nx * jamb * 2, middleY - ny * jamb * 2);
+    context.lineTo(middleX + nx * jamb * 2, middleY + ny * jamb * 2);
   }
   context.stroke();
 }
@@ -4749,6 +4756,7 @@ async function openSurveyRecord(record) {
 async function renderSurveyCatalog() {
   const token = ++catalogRenderToken;
   const records = sortSurveyRecords(await listSurveys());
+  refreshKnownStreets(records);
   if (token !== catalogRenderToken) return;
   elements.surveyCount.textContent = String(records.length);
   elements.surveyEmpty.hidden = records.length !== 0;

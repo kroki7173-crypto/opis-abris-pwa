@@ -254,10 +254,11 @@ function continuesNumber(previous, next) {
 
 // "Спартака два квартира сорок один" -> "Спартака д 2 кв 41". Numbers are always digits; a number without a marker
 // is the house, the next one the flat (Bolat, 05.10.2026). Numbers before the street ("8 Марта") stay in the street.
-export function spokenAddress(transcript, lessons = null) {
+export function spokenAddress(transcript, lessons = null, streets = []) {
   const { street, tail } = addressParts(transcript);
-  // A street the technician corrected once by hand is replaced the next time it is heard the same way.
-  const learned = lessons?.[streetKey(street)];
+  // A street the technician corrected once by hand is replaced the next time it is heard the same way; heard a
+  // little differently, it is found by its sound among the learned streets and those of the saved objects.
+  const learned = lessons?.[streetKey(street)] ?? nearestStreet(street, lessons, streets);
   const parts = [...(learned ? [learned] : street ? [street] : []), ...tail];
   if (!parts.length) return "";
   parts[0] = parts[0].charAt(0).toLocaleUpperCase("ru-RU") + parts[0].slice(1);
@@ -266,6 +267,78 @@ export function spokenAddress(transcript, lessons = null) {
 
 function streetKey(street) {
   return String(street ?? "").toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/gu, " ").trim();
+}
+
+// The street of a written address, without house and flat: "Затаевича д 33 кв 1" -> "Затаевича".
+export function addressStreet(address) {
+  return addressParts(address).street.trim();
+}
+
+// A street is recognised by its whole sound, as on the desktop (speech_text.nearest_known): Safari breaks a surname
+// it does not know into new pieces every time ("зато е вич", "за таевича"), and an exact lesson never meets the
+// same pieces twice (Bolat, 10.10.2026: "Затаевича пишет неправильно уже который раз").
+const STREET_MATCH = 0.62;
+// One word is a word from the recogniser's dictionary, usually a real street: it is taken only nearly exact or one
+// letter off, otherwise "Сатпаева" would silently become a learned "Сырлыбаева".
+const STREET_ONE_WORD = 0.9;
+// The best street must stand clear of the next one, or it would be a guess.
+const STREET_MARGIN = 0.05;
+
+function soundKey(text) {
+  return String(text ?? "").toLocaleLowerCase("ru-RU").replaceAll("ё", "е")
+    .replace(/[^0-9a-zа-я]+/gu, "").replace(/[ъь]/gu, "").replace(/(.)\1+/gu, "$1");
+}
+// difflib.SequenceMatcher.ratio: twice the matched letters over both lengths.
+function soundRatio(a, b) {
+  if (!a.length && !b.length) return 1;
+  const matched = (x, y) => {
+    let size = 0, atX = 0, atY = 0;
+    for (let i = 0; i < x.length; i += 1) {
+      for (let j = 0; j < y.length; j += 1) {
+        let k = 0;
+        while (i + k < x.length && j + k < y.length && x[i + k] === y[j + k]) k += 1;
+        if (k > size) [size, atX, atY] = [k, i, j];
+      }
+    }
+    return size ? size + matched(x.slice(0, atX), y.slice(0, atY)) + matched(x.slice(atX + size), y.slice(atY + size)) : 0;
+  };
+  return 2 * matched(a, b) / (a.length + b.length);
+}
+// At most one letter added, dropped or changed: "щелса" and "щорса", "затоевича" and "затаевича".
+function oneSlip(a, b) {
+  if (!a || !b || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  const rest = (x, y) => x === y;
+  return rest(a.slice(i + 1), b.slice(i + 1)) || rest(a.slice(i), b.slice(i + 1)) || rest(a.slice(i + 1), b.slice(i));
+}
+
+function nearestStreet(heard, lessons, streets) {
+  const key = soundKey(heard);
+  if (!key) return null;
+  const oneWord = String(heard).trim().split(/\s+/u).length < 2;
+  // Every street with what it is compared against: its own name and how it was heard before.
+  const sounds = new Map();
+  const add = (street, sound) => {
+    const name = String(street ?? "").trim();
+    if (!name) return;
+    const id = soundKey(name);
+    if (!sounds.has(id)) sounds.set(id, { name, against: [] });
+    sounds.get(id).against.push(soundKey(sound));
+  };
+  for (const name of streets ?? []) add(name, name);
+  for (const [sound, name] of Object.entries(lessons ?? {})) {
+    add(name, name);
+    add(name, sound);
+  }
+  const scored = [...sounds.values()].map(({ name, against }) => ({
+    name,
+    ratio: Math.max(0, ...against.map((other) => soundRatio(key, other))
+      .filter((ratio, index) => !oneWord || ratio >= STREET_ONE_WORD || oneSlip(key, against[index]))),
+  })).sort((a, b) => b.ratio - a.ratio);
+  const [best, next] = scored;
+  if (!best || best.ratio < STREET_MATCH || best.ratio - (next?.ratio ?? 0) < STREET_MARGIN) return null;
+  return best.name;
 }
 
 // What "Запомнить исправление" stores: how the street was heard and how it is really written.
@@ -408,7 +481,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
   }
 
   async function listen({
-    mode, onValue, onListening = () => {}, timeoutMs = 8000, silenceMs = 1200, addressLessons = null,
+    mode, onValue, onListening = () => {}, timeoutMs = 8000, silenceMs = 1200, addressLessons = null, addressStreets = [],
   }) {
     stop();
     const request = requestVersion;
@@ -454,7 +527,7 @@ export function createVoiceController(scope, onStatus = () => {}) {
         close();
         try {
           const value = MEASUREMENT_KINDS[mode] ? spokenMeasurement(transcript, MEASUREMENT_KINDS[mode])
-            : mode === "address" ? spokenAddress(transcript, addressLessons)
+            : mode === "address" ? spokenAddress(transcript, addressLessons, addressStreets)
               : mode === "angle" ? spokenAngle(transcript) : transcript;
           onValue(value, transcript);
           onStatus(`Распознано: «${transcript}». Проверьте значение.`, false);
