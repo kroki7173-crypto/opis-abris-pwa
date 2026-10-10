@@ -50,7 +50,7 @@
   --danger-bg: #452c29;
   --danger-border: #c0453c;
   --measured: #5cc27a;
-  --thickness-ask: #c3a6ff;
+  --thickness-ask: #8b5cf6;
   --busy: #7fc79a;
   --busy-bg: #263b30;
   --button: #a9c7e4;
@@ -440,3 +440,10 @@ dialog::backdrop { background: rgba(10, 15, 22, 0.48); backdrop-filter: blur(2px
 .balcony-side-choice .symbol-door { stroke-width: 1.8; }
 .balcony-side-choice .symbol-glass { stroke-width: 1.1; }
 .balcony-side-mirror { transform: scaleX(-1); }
+
+/* A held wall on the doors screen: "Толщина" pops up over the finger (Bolat, 10.10.2026). */
+#openingCanvas { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.press-bubble { position: fixed; z-index: 50; transform: translate(-50%, -150%); padding: 0.35rem 0.8rem; border-radius: 1rem;
+  background: var(--thickness-ask); color: #fff; font-weight: 700; pointer-events: none; box-shadow: 0 0.3rem 0.9rem rgba(0, 0, 0, 0.3);
+  animation: press-bubble 0.9s ease-out forwards; }
+@keyframes press-bubble { 0% { opacity: 0; } 15% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; } }

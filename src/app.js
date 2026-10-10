@@ -4623,19 +4623,20 @@ function syncWallFixBar() {
   elements.wallFixBar.hidden = false;
   selectVoiceTarget(elements.wallFixInput, mode, label);
 }
-function askWallFix() {
+function askWallFix(listen = true) {
   syncWallFixBar();
   recordHistory();
+  if (!listen) return;
   if (voiceController.capability().available) startContextVoice();
   else elements.wallFixInput.focus();
 }
-function startWallThicknessFix(wallIndex) {
+function startWallThicknessFix(wallIndex, listen = true) {
   const room = packageData.rooms[currentRoomIndex];
   hideWallFix();
   openingStep = null;
   wallFix = { type: "wallThickness", roomIndex: currentRoomIndex, wallIndex,
     value: wallThickness(room, room.walls[wallIndex]) };
-  askWallFix();
+  askWallFix(listen);
 }
 function startWallFix(wallIndex) {
   const room = packageData.rooms[currentRoomIndex];
@@ -5759,7 +5760,86 @@ elements.adjacentCanvas.addEventListener("click", (event) => {
   selectVoiceTargetById(wallIndex % 2 === 0 ? "adjacentFirstLength" : "adjacentSecondLength");
   startContextVoice();
 });
+// A short tap on a wall or its number is its length; a press held until "Толщина" pops up is its thickness (Bolat,
+// 10.10.2026: the finger kept landing on "т" when the length was meant).
+const WALL_PRESS_MS = 500;
+let wallPress = null;
+let wallPressDone = false;
+function openingCanvasPoint(event) {
+  const bounds = elements.openingCanvas.getBoundingClientRect();
+  return [(event.clientX - bounds.left) * elements.openingCanvas.width / bounds.width,
+    (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height];
+}
+function thicknessLabelAt(x, y) {
+  return (elements.openingCanvas.thicknessHitboxes ?? [])
+    .filter((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
+    .sort((first, second) => Math.hypot(x - first.x, y - first.y) - Math.hypot(x - second.x, y - second.y))[0] ?? null;
+}
+// The wall under a held finger: its "т", its length number or the wall line itself.
+function pressedWall(x, y) {
+  const room = packageData?.rooms?.[currentRoomIndex];
+  if (!room || openingStep) return null;
+  const label = thicknessLabelAt(x, y);
+  if (label) return label.wallIndex;
+  const length = (elements.openingCanvas.lengthHitboxes ?? []).find((box) =>
+    x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
+  if (length) return length.wallIndex;
+  const wallIndex = nearestWallIndex(elements.openingCanvas, room, x, y);
+  const segment = canvasWallSegment(elements.openingCanvas, room, wallIndex,
+    { offset_m: 0, width_m: room.walls[wallIndex].length_m });
+  return distanceToCanvasSegment(x, y, segment.slice(0, 2), segment.slice(2)) < 40 ? wallIndex : null;
+}
+function showPressBubble(text, clientX, clientY) {
+  const bubble = document.createElement("div");
+  bubble.className = "press-bubble";
+  bubble.textContent = text;
+  bubble.style.left = clientX + "px";
+  bubble.style.top = clientY + "px";
+  document.body.append(bubble);
+  setTimeout(() => bubble.remove(), 900);
+}
+function cancelWallPress() {
+  clearTimeout(wallPress?.timer);
+  wallPress = null;
+}
+elements.openingCanvas.addEventListener("pointerdown", (event) => {
+  wallPressDone = false;
+  // A second finger is a pinch, not a press.
+  if (wallPress || event.button > 0) {
+    cancelWallPress();
+    return;
+  }
+  const at = [event.clientX, event.clientY];
+  const point = openingCanvasPoint(event);
+  wallPress = { id: event.pointerId, at, timer: setTimeout(() => {
+    wallPress = null;
+    const wallIndex = pressedWall(...point);
+    if (wallIndex === null) return;
+    wallPressDone = true;
+    if (navigator.vibrate) navigator.vibrate(40);
+    showPressBubble("Толщина", ...at);
+    // The question shows at once; the microphone waits for the finger to lift: iOS starts it only from a release.
+    startWallThicknessFix(wallIndex, false);
+  }, WALL_PRESS_MS) };
+});
+elements.openingCanvas.addEventListener("pointerup", () => {
+  if (!wallPressDone || !wallFix) return;
+  if (voiceController.capability().available) startContextVoice();
+  else elements.wallFixInput.focus();
+});
+elements.openingCanvas.addEventListener("pointermove", (event) => {
+  if (wallPress?.id === event.pointerId &&
+    Math.hypot(event.clientX - wallPress.at[0], event.clientY - wallPress.at[1]) > 10) cancelWallPress();
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) elements.openingCanvas.addEventListener(type, cancelWallPress);
+// iOS would show its own menu or a magnifier under a held finger.
+elements.openingCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
 elements.openingCanvas.addEventListener("click", async (event) => {
+  // The tap that ended a long press has already opened the thickness.
+  if (wallPressDone) {
+    wallPressDone = false;
+    return;
+  }
   const room = packageData?.rooms?.[currentRoomIndex];
   if (!room) return;
   const bounds = elements.openingCanvas.getBoundingClientRect();
@@ -5785,11 +5865,10 @@ elements.openingCanvas.addEventListener("click", async (event) => {
     startAngleFix(cornerLabel.corner);
     return;
   }
-  const thicknessLabel = openingStep ? null : (elements.openingCanvas.thicknessHitboxes ?? [])
-    .filter((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
-    .sort((first, second) => Math.hypot(x - first.x, y - first.y) - Math.hypot(x - second.x, y - second.y))[0];
+  // A short tap on "т" is the wall's length, as everywhere; its thickness is a long press (pressedWallThickness).
+  const thicknessLabel = openingStep ? null : thicknessLabelAt(x, y);
   if (thicknessLabel) {
-    startWallThicknessFix(thicknessLabel.wallIndex);
+    startWallFix(thicknessLabel.wallIndex);
     return;
   }
   // A length label is outside its wall: only a tap outside the room and clear of the wall line corrects the number.
