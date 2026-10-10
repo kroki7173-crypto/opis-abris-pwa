@@ -1621,11 +1621,35 @@ function openingSegment(box, wallIndex, opening) {
 function uiColor(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
-function drawOpeningSymbol(context, segment, opening, fieldColor) {
+// The technicians' symbols (Bolat's legend, 10.10.2026), drawn across a wall of half-width h: a passage is the two
+// wall faces carried over the gap between the jambs; a door adds a cross stroke in its middle reaching past the wall;
+// glazing (a window, the exit to a balcony) adds two inner lines between the faces.
+function drawOpeningLines(context, segment, { h, glazed = false, door = false, jambs = true }) {
   const [x1, y1, x2, y2] = segment;
   const span = Math.hypot(x2 - x1, y2 - y1) || 1;
   const nx = -(y2 - y1) / span;
   const ny = (x2 - x1) / span;
+  context.beginPath();
+  for (const across of glazed ? [-h, -h / 3, h / 3, h] : [-h, h]) {
+    context.moveTo(x1 + nx * across, y1 + ny * across);
+    context.lineTo(x2 + nx * across, y2 + ny * across);
+  }
+  if (jambs) {
+    for (const [x, y] of [[x1, y1], [x2, y2]]) {
+      context.moveTo(x - nx * h, y - ny * h);
+      context.lineTo(x + nx * h, y + ny * h);
+    }
+  }
+  if (door) {
+    const [mx, my] = [(x1 + x2) / 2, (y1 + y2) / 2];
+    context.moveTo(mx - nx * h * 2.2, my - ny * h * 2.2);
+    context.lineTo(mx + nx * h * 2.2, my + ny * h * 2.2);
+  }
+  context.stroke();
+}
+function drawOpeningSymbol(context, segment, opening, fieldColor, glazed = opening.kind === "window") {
+  const [x1, y1, x2, y2] = segment;
+  context.save();
   context.strokeStyle = fieldColor;
   context.lineWidth = 18;
   context.beginPath();
@@ -1633,60 +1657,24 @@ function drawOpeningSymbol(context, segment, opening, fieldColor) {
   context.lineTo(x2, y2);
   context.stroke();
   context.strokeStyle = opening.kind === "window" ? uiColor("--button", "#285778") : uiColor("--nav-text", "#153e60");
-  context.lineWidth = 5;
-  if (opening.kind === "window") {
-    context.beginPath();
-    context.moveTo(x1, y1);
-    context.lineTo(x2, y2);
-    context.stroke();
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(x1 - nx * 6, y1 - ny * 6); context.lineTo(x2 - nx * 6, y2 - ny * 6);
-    context.moveTo(x1 + nx * 6, y1 + ny * 6); context.lineTo(x2 + nx * 6, y2 + ny * 6);
-    context.moveTo(x1 - nx * 9, y1 - ny * 9); context.lineTo(x1 + nx * 9, y1 + ny * 9);
-    context.moveTo(x2 - nx * 9, y2 - ny * 9); context.lineTo(x2 + nx * 9, y2 + ny * 9);
-    context.stroke();
-    return;
-  }
-  const jamb = 11;
-  context.beginPath();
-  context.moveTo(x1 - nx * jamb, y1 - ny * jamb); context.lineTo(x1 + nx * jamb, y1 + ny * jamb);
-  context.moveTo(x2 - nx * jamb, y2 - ny * jamb); context.lineTo(x2 + nx * jamb, y2 + ny * jamb);
-  if (opening.kind === "door") {
-    context.moveTo(x1, y1);
-    context.lineTo(x2, y2);
-    const middleX = (x1 + x2) / 2;
-    const middleY = (y1 + y2) / 2;
-    context.moveTo(middleX - nx * jamb * 2, middleY - ny * jamb * 2);
-    context.lineTo(middleX + nx * jamb * 2, middleY + ny * jamb * 2);
-  }
-  context.stroke();
+  context.lineWidth = 2.5;
+  drawOpeningLines(context, segment, { h: 7, glazed, door: opening.kind === "door" });
+  context.restore();
 }
 
+// The window beside a balcony door: together they are the exit to the balcony of the legend.
 function drawBalconyGlazingSymbol(context, segment, fieldColor, px = 1) {
   const [x1, y1, x2, y2] = segment;
-  const span = Math.hypot(x2 - x1, y2 - y1) || 1;
-  const nx = -(y2 - y1) / span;
-  const ny = (x2 - x1) / span;
   context.save();
   context.strokeStyle = fieldColor;
-  context.lineWidth = 10 * px;
+  context.lineWidth = 18 * px;
   context.beginPath();
   context.moveTo(x1, y1);
   context.lineTo(x2, y2);
   context.stroke();
   context.strokeStyle = uiColor("--button", "#285778");
-  context.lineWidth = 1.3 * px;
-  context.beginPath();
-  for (const shift of [-2.5, 0, 2.5]) {
-    context.moveTo(x1 + nx * shift * px, y1 + ny * shift * px);
-    context.lineTo(x2 + nx * shift * px, y2 + ny * shift * px);
-  }
-  context.moveTo(x1 - nx * 5 * px, y1 - ny * 5 * px);
-  context.lineTo(x1 + nx * 5 * px, y1 + ny * 5 * px);
-  context.moveTo(x2 - nx * 5 * px, y2 - ny * 5 * px);
-  context.lineTo(x2 + nx * 5 * px, y2 + ny * 5 * px);
-  context.stroke();
+  context.lineWidth = 2.5 * px;
+  drawOpeningLines(context, segment, { h: 7 * px, glazed: true });
   context.restore();
 }
 
@@ -2040,7 +2028,8 @@ function drawPolygonRoom(canvas, room, selectedWall, attention, letters = true) 
   for (const opening of room.openings ?? []) {
     const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
     if (wallIndex < 0) continue;
-    drawOpeningSymbol(context, canvasWallSegment(canvas, room, wallIndex, opening), opening, field);
+    drawOpeningSymbol(context, canvasWallSegment(canvas, room, wallIndex, opening), opening, field,
+      opening.kind === "window" || Boolean(balconyForOpening(room, opening.id)));
   }
   drawRoomBalconyGlazing(canvas, room, (point) => roomPointToCanvas(room, box, point));
 
@@ -2153,7 +2142,8 @@ function drawRoom(canvas, room, selectedWall = null, attention = false, inputIds
   for (const opening of room.openings ?? []) {
     const wallIndex = room.walls.findIndex((wall) => wall.id === opening.wall_id);
     if (wallIndex < 0) continue;
-    drawOpeningSymbol(context, openingSegment(box, wallIndex, opening), opening, field);
+    drawOpeningSymbol(context, openingSegment(box, wallIndex, opening), opening, field,
+      opening.kind === "window" || Boolean(balconyForOpening(room, opening.id)));
   }
   drawRoomBalconyGlazing(canvas, room, (point) => roomPointToCanvas(room, box, point));
 
@@ -2369,25 +2359,26 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
       const to = opening.offset_m + opening.width_m;
       context.beginPath();
       path([at(from, -0.01), at(to, -0.01), at(to, thickness + 0.01), at(from, thickness + 0.01)]);
-      context.fillStyle = opening.kind === "window" ? field : surface;
+      // The technicians' legend (Bolat, 10.10.2026): a passage carries the two wall faces over the gap; a door adds a
+      // cross stroke in its middle 8 cm past the wall; glazing — a window, the exit to a balcony — two inner lines.
+      const balcony = balconyForOpening(room, opening.id);
+      const glazed = opening.kind === "window" || Boolean(balcony);
+      context.fillStyle = glazed ? field : surface;
       context.fill();
       context.strokeStyle = measured;
       context.lineWidth = 1.5 * px;
-      context.beginPath();
-      if (opening.kind === "window") {
-        for (const across of [0, thickness / 2, thickness]) {
-          const [x1, y1] = at(from, across);
-          const [x2, y2] = at(to, across);
+      const across = (start, end, levels) => {
+        for (const level of levels) {
+          const [x1, y1] = at(start, level);
+          const [x2, y2] = at(end, level);
           context.moveTo(x1, y1);
           context.lineTo(x2, y2);
         }
-      } else if (opening.kind === "door") {
-        // As the desktop draws it (abris_drawing): the leaf along the opening and a cross stroke in its middle,
-        // through the wall and 8 cm beyond it on both sides.
-        const [x1, y1] = at(from, thickness / 2);
-        const [x2, y2] = at(to, thickness / 2);
-        context.moveTo(x1, y1);
-        context.lineTo(x2, y2);
+      };
+      const faces = (glazed) => glazed ? [0, thickness / 3, thickness * 2 / 3, thickness] : [0, thickness];
+      context.beginPath();
+      across(from, to, faces(glazed));
+      if (opening.kind === "door") {
         const middle = (from + to) / 2;
         const [x3, y3] = at(middle, -0.08);
         const [x4, y4] = at(middle, thickness + 0.08);
@@ -2395,12 +2386,24 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
         context.lineTo(x4, y4);
       }
       context.stroke();
-      const balcony = balconyForOpening(room, opening.id);
+      // The window beside a balcony door, cut into the wall with its own jambs: one between it and the door.
       const wing = balcony ? balconySymbolWing(room, balcony) : null;
       if (wing) {
-        const first = at(wing.offset_m, thickness / 2);
-        const last = at(wing.offset_m + wing.width_m, thickness / 2);
-        drawBalconyGlazingSymbol(context, [...first, ...last], surface, px);
+        const wingFrom = wing.offset_m;
+        const wingTo = wing.offset_m + wing.width_m;
+        context.beginPath();
+        path([at(wingFrom, -0.01), at(wingTo, -0.01), at(wingTo, thickness + 0.01), at(wingFrom, thickness + 0.01)]);
+        context.fillStyle = field;
+        context.fill();
+        context.beginPath();
+        across(wingFrom, wingTo, faces(true));
+        for (const end of [wingFrom, wingTo]) {
+          const [x1, y1] = at(end, 0);
+          const [x2, y2] = at(end, thickness);
+          context.moveTo(x1, y1);
+          context.lineTo(x2, y2);
+        }
+        context.stroke();
       }
     }
   });
