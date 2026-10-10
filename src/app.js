@@ -102,7 +102,7 @@ const ids = [
   "settingsScreen", "helpScreen", "darkThemeSetting", "showThemeControl", "hintsSetting", "micHoldSetting", "hintCard", "hintText",
   "measureNavButton", "objectsNavButton", "settingsNavButton", "helpNavButton",
   "summaryAddress", "roomSummary", "validationPanel", "validationTitle", "validationList", "installButton",
-  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "removeRoomButton", "summaryHeight",
+  "issuesReturnButton", "wallFixBar", "wallFixLabel", "wallFixInput", "wallFixDone", "removeRoomButton", "summaryHeight",
   "adjacentBalconyButton", "balconySize", "balconyActions", "balconyPrompt", "balconyText", "balconyRemoveButton",
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -316,6 +316,7 @@ function refreshVoiceTarget() {
   const id = defaultVoiceTargetForScreen();
   elements.contextMicButton.hidden = ["done", "settings", "help"].includes(currentScreen) || !voiceController.capability().available;
   if (id) selectVoiceTargetById(id);
+  syncMicQuestionLabel();
 }
 
 async function startContextVoice({ resume = false } = {}) {
@@ -428,11 +429,27 @@ function loadPhraseApply() {
   });
   return phraseApplyModule;
 }
+// A red question open on the doors screen takes the green microphone: what is said answers it, as a tap on the red
+// button would (Codex walk 11.10.2026: "двенадцать" said with "Толщина стены C–D ?" open went into a phrase and made
+// the hall's walls 12 m long).
+function openQuestionPrompt() {
+  if (currentScreen !== "openings" || wallFix) return null;
+  return [elements.wallLengthPrompt, elements.openingThicknessPrompt, elements.wallThicknessPrompt, elements.balconyPrompt]
+    // Really on the screen: the balcony question sits in a block of its own that may be hidden around it.
+    .find((prompt) => !prompt.hidden && prompt.getClientRects().length > 0) ?? null;
+}
+// The green microphone says what it will answer.
+function syncMicQuestionLabel() {
+  const question = openQuestionPrompt();
+  if (!question) return;
+  const asked = question.textContent.replace(/🎙/gu, "").replace(/\s+/gu, " ").trim();
+  elements.contextMicButton.title = `Ответить: ${asked}`;
+  elements.contextMicButton.setAttribute("aria-label", `Ответить: ${asked}`);
+}
 function phraseModeAvailable() {
   if (!voiceController.capability().available || voiceListening) return false;
   if (currentScreen === "openings") {
-    // An open balcony question does not take the green microphone: it is answered by its own red button.
-    return Boolean(packageData?.rooms?.[currentRoomIndex]) && !openingStep && !wallFix;
+    return Boolean(packageData?.rooms?.[currentRoomIndex]) && !openingStep && !wallFix && !openQuestionPrompt();
   }
   if (currentScreen === "room") return !packageData?.rooms?.length && (entrance.step === "wall" || entrance.step === "measure");
   return false;
@@ -998,7 +1015,9 @@ function initializeUi() {
       micClickSwallowed = false;
       return;
     }
-    if (phraseModeAvailable()) startPhraseVoice();
+    const question = openQuestionPrompt();
+    if (question) question.click();
+    else if (phraseModeAvailable()) startPhraseVoice();
     else startContextVoice();
   });
   installMicHold();
@@ -2452,9 +2471,13 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
   // Places the app does not understand: a red numbered mark, the same number as in the list under the plan.
   // One fixed red with white digits reads in both themes.
   // The canvas is in device pixels: the mark is sized in screen points so it reads on a phone.
+  // Two remarks at one place (a passage and the thickness of its wall) stand side by side, not one over the other.
+  const placed = [];
   (canvas.problemPoints ?? []).forEach((point, index) => {
     if (!point) return;
-    const [x, y] = transform(point);
+    let [x, y] = transform(point);
+    while (placed.some(([px0, py0]) => Math.hypot(x - px0, y - py0) < 26 * px)) x += 30 * px;
+    placed.push([x, y]);
     context.beginPath();
     context.arc(x, y, 14 * px, 0, Math.PI * 2);
     context.fillStyle = "#d93025";
@@ -2473,7 +2496,8 @@ const ROOM_TIPS = {
   wall: "Шаг 2. Вход всегда снизу. Нажмите на мигающую красную стену — включится микрофон — и назовите её длину.",
   anchor: "Шаг 3. Дверь встала посередине. Нажмите на мигающий кусок стены слева или справа от двери и назовите расстояние от угла до двери.",
   thickness: "Шаг 4. Нажмите красную кнопку «Толщина ?» и назовите толщину стены. Ошиблись в расстоянии — коснитесь стены с дверью.",
-  measure: "Шаг 5. Нажмите на мигающую стену и назовите её длину.",
+  // How a room of 5–6 walls is begun had to be found out (Codex walk 11.10.2026): it is said here, the button stays out.
+  measure: "Шаг 5. Нажмите на мигающую стену и назовите её длину. Комната не прямоугольная — назовите и противоположную стену: другая длина откроет форму.",
 };
 // One hint per step in a yellow card above the drawing (Bolat, 05.10.2026); switched off in "Настройки"
 // once the technician knows the way.
@@ -2544,7 +2568,7 @@ function hintText() {
     if (!elements.adjacentAnchorPanel.hidden && !elements.adjacentAnchorPanel.classList.contains("complete")) {
       return "Стена с дверью другой длины. Нажмите «До двери» и назовите расстояние от угла до двери.";
     }
-    return "Назовите обе стены сразу: «4,5 на 4» (сначала стена с дверью). Или коснитесь стены на рисунке. Балкон — кнопка вверху.";
+    return "Назовите обе стены сразу: «4,5 на 4» (сначала стена с дверью). Или коснитесь стены на рисунке. Не прямоугольная — коснитесь противоположной стены и назовите её длину. Балкон — кнопка вверху.";
   }
   if (currentScreen === "done" && packageData?.rooms?.length) {
     if (validationIssues(packageData).length) return "Нажмите на замечание — откроется место, где его исправить.";
@@ -3455,11 +3479,12 @@ function renderOpenings() {
     elements.wallThicknessText.textContent =
       `Толщина стены ${cornerName(thicknessWall)}–${cornerName((thicknessWall + 1) % room.walls.length)} ?`;
   }
+  syncMicQuestionLabel();
   // A house: the entrance thickness went round every outer wall; a wall shared with a neighbour is corrected by its
   // "т". Said once per object.
   if (isHouse() && houseNoticeFor !== packageData.package_id && thicknessSaid.length) {
     houseNoticeFor = packageData.package_id;
-    showNotice("Дом: наружные стены взяли толщину у входа. Стена с соседом другая — коснитесь её «т» и назовите.", 7000);
+    showNotice("Дом: наружные стены взяли толщину у входа. Стена с соседом другая — подержите на ней палец и назовите.", 7000);
   }
   if (openingStep?.step === "width" && guided) {
     elements.openingThicknessText.textContent = `Ширина ${OPENING_GENITIVE[guided.kind]} ?`;
@@ -4025,7 +4050,7 @@ function renderAdjacent() {
   if (!elements.adjacentFirstLength.value) {
     elements.adjacentFirstLength.value = parentWall.length_m.toFixed(2).replace(".", ",");
   }
-  elements.adjacentFrom.textContent = parent.name;
+  elements.adjacentFrom.textContent = `из «${parent.name}»`;
 
   const first = decimal(elements.adjacentFirstLength.value);
   const second = decimal(elements.adjacentSecondLength.value);
@@ -4189,6 +4214,16 @@ function problemIssue(pkg, problem) {
     : ["no_thickness", "no_height"].includes(problem.kind) ? null : room;
   return { key, text, action, fixes };
 }
+// A place on a wall of the plan: every remark about a wall or an opening gets its number there (Codex walk 11.10.2026:
+// "Места отмечены на плане номерами" — and the wall thicknesses were only in the list).
+function wallPlanPoint(room, wallIndex, along = null) {
+  const points = roomPoints(room);
+  const [start, end] = [points[wallIndex], points[wallIndex + 1]];
+  if (!start || !end) return null;
+  const length = Math.hypot(end[0] - start[0], end[1] - start[1]) || 1;
+  const share = along === null ? 0.5 : Math.min(1, Math.max(0, along / length));
+  return [start[0] + (end[0] - start[0]) * share, start[1] + (end[1] - start[1]) * share];
+}
 function validationIssues(pkg) {
   const issues = [];
   try {
@@ -4205,7 +4240,8 @@ function validationIssues(pkg) {
       if (!phraseUnplaced.includes(opening.id)) continue;
       const what = { door: "двери", window: "окна", passage: "проёма" }[opening.kind] ?? "проёма";
       issues.push({ key: "unplaced:" + opening.id, text: `«${room.name}»: не названо расстояние от угла до ${what}.`,
-        action: { type: "opening", roomIndex, openingId: opening.id }, fixes: [] });
+        action: { type: "opening", roomIndex, openingId: opening.id }, fixes: [],
+        point: wallPlanPoint(room, openingWallIndex(room, opening), opening.offset_m + opening.width_m / 2) });
     }
   });
   // A wall whose thickness nobody named and no rule could give (Bolat, 10.10.2026).
@@ -4217,7 +4253,8 @@ function validationIssues(pkg) {
     if (room.openings.some((opening) => opening.wall_id === item.wallId && !(opening.wall_thickness_m > 0))) continue;
     const wall = `${cornerName(item.wallIndex)}–${cornerName((item.wallIndex + 1) % room.walls.length)}`;
     issues.push({ key: "thickness:" + item.wallId, text: `«${room.name}»: не названа толщина стены ${wall}.`,
-      action: { type: "thickness", roomIndex: item.roomIndex, wallIndex: item.wallIndex }, fixes: [] });
+      action: { type: "thickness", roomIndex: item.roomIndex, wallIndex: item.wallIndex }, fixes: [],
+      point: wallPlanPoint(room, item.wallIndex) });
   }
   const seen = new Set();
   return issues.filter((issue) => !seen.has(issue.key) && seen.add(issue.key));
@@ -4710,12 +4747,19 @@ elements.issuesReturnButton.addEventListener("click", () => {
   showScreen("done");
   persist();
 });
-elements.wallFixInput.addEventListener("change", async () => {
+async function confirmWallFix() {
   if (!wallFix) return;
   const fix = wallFix;
   wallFix = null;
   elements.wallFixBar.hidden = true;
   await applyFix(fix, elements.wallFixInput.value);
+}
+elements.wallFixInput.addEventListener("change", confirmWallFix);
+// The same number confirmed again: "change" does not come for an unchanged field, and the iPhone number pad has no
+// return key (Codex walk 11.10.2026: the remark with 0,12 already in the field could not be closed by 0,12).
+elements.wallFixDone.addEventListener("click", confirmWallFix);
+elements.wallFixInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") confirmWallFix();
 });
 // Back to the remarks from the screen a remark opened, with how many are left.
 function syncIssuesReturn() {

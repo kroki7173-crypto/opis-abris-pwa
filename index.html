@@ -99,9 +99,9 @@
     </section>
     <section id="openingsScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
-        <strong>Двери и окна</strong>
+        <!-- The room one is in, under the step (Codex walk 11.10.2026: after a few doors it was found only by the inset). -->
+        <strong>Двери и окна<span id="openingsRoomName" class="toolbar-room"></span></strong>
         <button id="roomNoteButton" class="secondary compact room-note-trigger" type="button">🎙 Примечание</button>
-        <span id="openingsRoomName" hidden></span>
       </div>
 
       <div class="canvas-data-inputs">
@@ -123,7 +123,8 @@
         <figcaption class="plan-tip">Коснитесь числа — длина, подержите стену — толщина. Стена — проём, дверь — комната, внутри — санузел</figcaption>
       </figure>
       <label id="wallFixBar" class="wall-fix" hidden><span id="wallFixLabel"></span>
-        <input id="wallFixInput" inputmode="decimal" autocomplete="off"></label>
+        <input id="wallFixInput" inputmode="decimal" autocomplete="off">
+        <button id="wallFixDone" class="secondary" type="button">Готово</button></label>
       <button id="wallLengthPrompt" class="thickness-prompt" type="button" hidden>
         <span id="wallLengthText">Длина стены ?</span><span aria-hidden="true">🎙</span>
       </button>
@@ -217,11 +218,10 @@
     </section>
     <section id="adjacentScreen" class="card screen plan-screen" hidden>
       <div class="plan-toolbar">
-        <strong>Следующая комната</strong>
+        <strong>Следующая комната<span id="adjacentFrom" class="toolbar-room"></span></strong>
         <!-- A balcony is not measured as a room (Bolat, 08.10.2026): its size is said and it is drawn by its symbol. -->
         <button id="adjacentBalconyButton" class="secondary compact toolbar-end" type="button">Балкон</button>
       </div>
-      <span id="adjacentFrom" hidden></span>
 
       <div class="canvas-data-inputs">
         <label for="adjacentName">Название</label>
@@ -383,6 +383,8 @@
         <p>Все цифры стоят на рисунке: длины стен снаружи, расстояния от угла до дверей и окон — внутри,
           в рамке. Коснитесь неверной цифры и скажите её заново — план перестроится сам. Толщину стены у
           двери или окна исправляют в списке под рисунком: коснитесь «стена 0,14 м».</p>
+        <p>Комната не прямоугольная (5–6 стен, скошенный угол) — коснитесь стены напротив уже названной и назовите её
+          длину. Если она другая, откроется форма комнаты: стены по очереди и углы.</p>
         <p>У комнаты непрямоугольной формы у букв углов написаны градусы (прямой угол не пишется).
           Угол неверный — коснитесь его буквы и скажите угол заново, например «сто тридцать пять».
           Двери, окна и комнаты за ними остаются на месте. Угол A считается сам из остальных.</p>
