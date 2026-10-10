@@ -2368,10 +2368,17 @@ function drawPlan(canvas, pkg, view = { zoom: 1, x: 0, y: 0 }) {
           context.lineTo(x2, y2);
         }
       } else if (opening.kind === "door") {
+        // As the desktop draws it (abris_drawing): the leaf along the opening and a cross stroke in its middle,
+        // through the wall and 8 cm beyond it on both sides.
         const [x1, y1] = at(from, thickness / 2);
         const [x2, y2] = at(to, thickness / 2);
         context.moveTo(x1, y1);
         context.lineTo(x2, y2);
+        const middle = (from + to) / 2;
+        const [x3, y3] = at(middle, -0.08);
+        const [x4, y4] = at(middle, thickness + 0.08);
+        context.moveTo(x3, y3);
+        context.lineTo(x4, y4);
       }
       context.stroke();
       const balcony = balconyForOpening(room, opening.id);
