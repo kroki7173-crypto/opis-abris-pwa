@@ -1684,9 +1684,11 @@ function drawBalconyGlazingSymbol(context, segment, fieldColor, px = 1) {
 }
 
 function drawRoomBalconyGlazing(canvas, room, toCanvas) {
+  // The entrance preview has no balconies and no origin_m: nothing to draw, and roomPoints would fail on it.
+  if (!room.balconies?.length) return;
   const context = canvas.getContext("2d");
   const points = roomPoints(room);
-  for (const balcony of room.balconies ?? []) {
+  for (const balcony of room.balconies) {
     const wing = balconySymbolWing(room, balcony);
     if (!wing) continue;
     const wallIndex = room.walls.findIndex((wall) => wall.id === wing.wall_id);
