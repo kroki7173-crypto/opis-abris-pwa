@@ -1977,10 +1977,24 @@ function drawWallThicknessLabels(canvas, room, corners) {
     const start = corners[wallIndex];
     const end = corners[(wallIndex + 1) % corners.length];
     const normal = outward(start, end);
+    const text = "т " + formatLength(wallThickness(room, wall));
+    const half = context.measureText(text).width / 2;
+    // Written along its wall, as the lengths are: across a side wall the number reached over the wall line, and a
+    // finger meant for a door opened "т" (Bolat, 10.10.2026), and in a narrow room the two side numbers met.
     const x = (start[0] + end[0]) / 2 - normal[0] * 30;
     const y = (start[1] + end[1]) / 2 - normal[1] * 30;
-    context.fillText("т " + formatLength(wallThickness(room, wall)), x, y);
-    canvas.thicknessHitboxes.push({ wallIndex, x, y, left: x - 49, right: x + 49, top: y - 22, bottom: y + 22 });
+    let angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+    if (angle > Math.PI / 2) angle -= Math.PI;
+    if (angle <= -Math.PI / 2) angle += Math.PI;
+    context.save();
+    context.translate(x, y);
+    context.rotate(angle);
+    context.fillText(text, 0, 0);
+    context.restore();
+    const [cos, sin] = [Math.abs(Math.cos(angle)), Math.abs(Math.sin(angle))];
+    const reachX = cos * half + sin * 10 + 6;
+    const reachY = sin * half + cos * 10 + 6;
+    canvas.thicknessHitboxes.push({ wallIndex, x, y, left: x - reachX, right: x + reachX, top: y - reachY, bottom: y + reachY });
   });
   context.restore();
 }
@@ -3065,7 +3079,8 @@ function openingPiece(canvas, room, opening, side) {
 }
 // Windows are in the facade, often thicker than the stair wall with the entrance (Bolat, 06.10.2026, by an official
 // plan): the first window of the flat asks its wall thickness once, every later window takes it and asks nothing.
-// Doors and passages always ask: partitions are 0,1 or 0,15-0,25, each its own.
+// Doors and passages ask, partitions being 0,1 or 0,15-0,25, each its own — unless their wall's thickness is
+// already known (finishOpeningPlacement).
 function knownWindowThickness(exceptId) {
   for (const room of packageData?.rooms ?? []) {
     for (const opening of room.openings ?? []) {
@@ -3175,7 +3190,15 @@ function finishOpeningPlacement(id) {
   const balcony = Boolean(openingStep?.balcony || balconyForOpening(room, id));
   const balconyDoorSide = openingStep?.balconyDoorSide ?? balconyForOpening(room, id)?.door_side ?? "left";
   const windowThickness = knownWindowThickness(id);
-  if ((opening.kind === "window" || balcony) && !(opening.wall_thickness_m > 0) && windowThickness) {
+  // A wall whose thickness was named or carried to it by the rules is not asked again at its door (Bolat, 10.10.2026:
+  // "т 0,12" stood on the wall and the door still asked for the thickness).
+  const wallIndex = openingWallIndex(room, opening);
+  const wallKnown = thicknessStatuses().some((item) => item.roomIndex === currentRoomIndex &&
+    item.wallIndex === wallIndex && item.status !== "open");
+  if (!(opening.wall_thickness_m > 0) && wallKnown) {
+    packageData = setOpeningWallThickness(packageData, currentRoomIndex, id,
+      String(wallThickness(room, room.walls[wallIndex])));
+  } else if ((opening.kind === "window" || balcony) && !(opening.wall_thickness_m > 0) && windowThickness) {
     packageData = setOpeningWallThickness(packageData, currentRoomIndex, id, String(windowThickness));
   }
   const placed = packageData.rooms[currentRoomIndex].openings.find((item) => item.id === id);
@@ -3411,8 +3434,10 @@ function renderOpenings() {
   draw();
   renderPresets();
 
+  // While the distance of the opening is asked, its thickness waits: one question at a time (Bolat, 10.10.2026: the red
+  // "Толщина стены у двери ?" next to the asked distance made the distance look like the thickness).
   const missingThickness = openingStep?.step === "thickness" ? guided
-    : openingStep?.step === "width" ? null : latestOpeningWithoutThickness(room);
+    : ["width", "side"].includes(openingStep?.step) ? null : latestOpeningWithoutThickness(room);
   // While the content of a wall is asked, its length can be said; a thickness owed elsewhere waits.
   const askingWall = openingStep?.step === "kind" ? room.walls[openingStep.wallIndex] : null;
   elements.wallLengthPrompt.hidden = !askingWall;
@@ -5771,6 +5796,12 @@ function openingCanvasPoint(event) {
     (event.clientY - bounds.top) * elements.openingCanvas.height / bounds.height];
 }
 function thicknessLabelAt(x, y) {
+  // Near a wall line the finger means the wall itself.
+  const room = packageData?.rooms?.[currentRoomIndex];
+  const outline = room ? canvasRoomOutline(elements.openingCanvas, room) : [];
+  if (outline.some((point, index) => distanceToCanvasSegment(x, y, point, outline[(index + 1) % outline.length]) < 22)) {
+    return null;
+  }
   return (elements.openingCanvas.thicknessHitboxes ?? [])
     .filter((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
     .sort((first, second) => Math.hypot(x - first.x, y - first.y) - Math.hypot(x - second.x, y - second.y))[0] ?? null;
