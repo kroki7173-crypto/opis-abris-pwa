@@ -4169,6 +4169,8 @@ function validationIssues(pkg) {
     if (item.status !== "open") continue;
     const room = pkg.rooms[item.roomIndex];
     if (!room) continue;
+    // A door or window on it without its thickness is already a remark of its own: one remark per wall.
+    if (room.openings.some((opening) => opening.wall_id === item.wallId && !(opening.wall_thickness_m > 0))) continue;
     const wall = `${cornerName(item.wallIndex)}–${cornerName((item.wallIndex + 1) % room.walls.length)}`;
     issues.push({ key: "thickness:" + item.wallId, text: `«${room.name}»: не названа толщина стены ${wall}.`,
       action: { type: "thickness", roomIndex: item.roomIndex, wallIndex: item.wallIndex }, fixes: [] });

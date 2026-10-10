@@ -1842,7 +1842,7 @@ const THIN_WALL_M = 0.05;
 const PARTITION_MAX_M = 0.6;
 const FACING_MIN_M = 0.3;
 
-function roomWalls(room) {
+export function roomWalls(room) {
   const points = roomPoints(room);
   const winding = signedArea(points.slice(0, -1)) > 0 ? 1 : -1;
   return room.walls.map((wall, index) => {
@@ -1856,7 +1856,7 @@ function roomWalls(room) {
 
 // Walls of two different rooms that look at each other across a partition: antiparallel, overlapping along
 // at least 30 cm, the second within 60 cm in front of the first. gap_m < 0 means the rooms overlap there.
-function facingWalls(pkg, minGap = -0.02) {
+export function facingWalls(pkg, minGap = -0.02) {
   const walls = pkg.rooms.map(roomWalls);
   const result = [];
   for (let first = 0; first < walls.length; first += 1) {
